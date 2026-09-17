@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Device tree describing an IMX585 image sensor and CEF168 lens controller
+// integrated directly into the Jetson Orin Nano dev kit base DT.
+
+/dts-v1/;
+
+#include <dt-bindings/tegra234-p3767-0000-common.h>
+#include <dt-bindings/clock/tegra234-clock.h>
+#include "tegra234-p3768-0000+p3767-0000-oe4t.dts"
+
+#define CAM0_PWDN       TEGRA234_MAIN_GPIO(H, 6)
+#define CAM_I2C_MUX     TEGRA234_AON_GPIO(CC, 3)
+
+/ {
+    imx585_vdig_reg: regulator-imx585-vdig {
+        compatible = "regulator-fixed";
+        regulator-name = "IMX585_VDIG";
+        regulator-min-microvolt = <1100000>;
+        regulator-max-microvolt = <1100000>;
+        regulator-always-on;
+        vin-supply = <&vdd_1v8_ao>;
+    };
+
+    tcp: tegra-camera-platform {
+        compatible = "nvidia, tegra-camera-platform";
+        num_csi_lanes = <4>;
+        max_lane_speed = <1800000>;
+        min_bits_per_pixel = <12>;
+        vi_peak_byte_per_pixel = <2>;
+        vi_bw_margin_pct = <25>;
+        max_pixel_rate = <9600000>;
+        isp_peak_byte_per_pixel = <5>;
+        isp_bw_margin_pct = <25>;
+
+        modules {
+            module0 {
+                badge = "tegrademo_front_IMX585";
+                position = "front";
+                orientation = "0";
+
+                drivernode0 {
+                    pcl_id = "v4l2_sensor";
+                    sysfs-device-tree = "/sys/firmware/devicetree/base/bus@0/cam_i2cmux/i2c@0/imx585_a@1a";
+                };
+
+                drivernode1 {
+                    pcl_id = "v4l2_lens";
+                    sysfs-device-tree = "/sys/firmware/devicetree/base/bus@0/cam_i2cmux/i2c@0/cef168@d";
+                };
+            };
+        };
+    };
+
+    cam_i2cmux: cam_i2cmux {
+        status = "okay";
+        compatible = "i2c-mux-gpio";
+        #address-cells = <1>;
+        #size-cells = <0>;
+        mux-gpios = <&gpio_aon CAM_I2C_MUX GPIO_ACTIVE_HIGH>;
+        i2c-parent = <&cam_i2c>;
+
+        i2c@0 {
+            status = "okay";
+            reg = <0>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            imx585_a@1a {
+                status = "okay";
+                compatible = "sony,imx585";
+                reg = <0x1a>;
+                clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>,
+                         <&bpmp TEGRA234_CLK_PLLP_OUT0>;
+                clock-names = "extperiph1", "pllp_grtba";
+                mclk = "extperiph1";
+                clock-frequency = <24000000>;
+                assigned-clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>;
+                assigned-clock-parents = <&bpmp TEGRA234_CLK_PLLP_OUT0>;
+                assigned-clock-rates = <24000000>;
+                reset-gpios = <&gpio CAM0_PWDN GPIO_ACTIVE_HIGH>;
+                vana-supply = <&vdd_3v3_ao>;
+                vdig-supply = <&imx585_vdig_reg>;
+                vddl-supply = <&vdd_1v8_ao>;
+                link-frequencies = /bits/ 64 <720000000>;
+                orientation = <0>;
+                devnode = "video0";
+                use-sensor-mode-id;
+
+            port {
+                imx585_out0: endpoint {
+                    port-index = <1>;
+                    bus-width = <4>;
+                    clock-lanes = <0>;
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <720000000>;
+                    remote-endpoint = <&imx585_csi_in0>;
+                };
+            };
+        };
+
+            cef168@d {
+                status = "okay";
+                compatible = "pinefeat,cef168";
+                reg = <0x0d>;
+                vcc-supply = <&vdd_3v3_ao>;
+            };
+        };
+    };
+};
+
+&capture_vi {
+    num-channels = <1>;
+
+    ports {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        port@0 {
+            reg = <0>;
+
+            imx585_vi_in0: endpoint {
+                port-index = <1>;
+                bus-width = <4>;
+                remote-endpoint = <&imx585_csi_out0>;
+            };
+        };
+    };
+};
+
+&nvcsi {
+    num-channels = <1>;
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+    channel@0 {
+        reg = <0>;
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+
+                imx585_csi_in0: endpoint@0 {
+                    port-index = <1>;
+                    bus-width = <4>;
+                    clock-lanes = <0>;
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <720000000>;
+                    remote-endpoint = <&imx585_out0>;
+                };
+            };
+
+            port@1 {
+                reg = <1>;
+
+                imx585_csi_out0: endpoint@1 {
+                    remote-endpoint = <&imx585_vi_in0>;
+                };
+            };
+        };
+    };
+};
+
+&cam_i2c {
+    status = "okay";
+};

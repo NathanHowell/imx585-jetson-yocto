@@ -1,0 +1,118 @@
+From d7ad770ff21672cef2efe61a7ba27905d65c5d1c Mon Sep 17 00:00:00 2001
+From: Codex Assistant <codex@example.com>
+Date: Sat, 4 Oct 2025 17:05:00 +0000
+Subject: [PATCH] imx585-overlay: Describe clocks and supplies
+Upstream-Status: Pending [board default lane rate, supplies]
+
+Describe the IMX585 CSI lane speed, 24 MHz master clock, and the always-on
+sensor supply rails provided by the carrier. This lets the driver match a
+supported link frequency at probe time and keeps the regulator framework
+aware of the power tree instead of falling back to dummy regulators.
+---
+--- a/imx585-overlay.dts
++++ b/imx585-overlay.dts
+@@ -3,10 +3,16 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#define IMX585_LANE_RATE 1188000000ULL
++#define IMX585_LINK_FREQ (IMX585_LANE_RATE / 2)
++#define IMX585_MCLK_FREQ 24000000
++
+ #define CAM0_PWDN	TEGRA234_MAIN_GPIO(H, 6)
+ #define CAM1_PWDN	TEGRA234_MAIN_GPIO(AC, 0)
+ #define CAM_I2C_MUX 	TEGRA234_AON_GPIO(CC, 3)
+ 
++#include <dt-bindings/clock/tegra234-clock.h>
++
+ #include <dt-bindings/tegra234-p3767-0000-common.h>
+ 
+ / {
+@@ -17,6 +23,33 @@
+ 	fragment@0 {
+ 		target-path = "/";
+ 		__overlay__ {
++			imx585_vana: regulator-imx585-vana {
++				compatible = "regulator-fixed";
++				regulator-name = "imx585_vana";
++				regulator-min-microvolt = <3300000>;
++				regulator-max-microvolt = <3300000>;
++				regulator-always-on;
++				vin-supply = <&vdd_3v3_ao>;
++			};
++
++			imx585_vdig: regulator-imx585-vdig {
++				compatible = "regulator-fixed";
++				regulator-name = "imx585_vdig";
++				regulator-min-microvolt = <1100000>;
++				regulator-max-microvolt = <1100000>;
++				regulator-always-on;
++				vin-supply = <&vdd_3v3_ao>;
++			};
++
++			imx585_vddl: regulator-imx585-vddl {
++				compatible = "regulator-fixed";
++				regulator-name = "imx585_vddl";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				vin-supply = <&vdd_1v8_ao>;
++			};
++
+ 			tegra-capture-vi  {
+ 				num-channels = <2>;
+ 				ports {
+@@ -147,6 +180,17 @@
+ 							compatible = "sony,imx585";
+ 							reg = <0x1a>;
+ 							devnode = "video0";
++							clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>,
++							         <&bpmp TEGRA234_CLK_PLLP_OUT0>;
++							clock-names = "extperiph1", "pllp_grtba";
++							mclk = "extperiph1";
++							clock-frequency = <IMX585_MCLK_FREQ>;
++							assigned-clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>;
++							assigned-clock-parents = <&bpmp TEGRA234_CLK_PLLP_OUT0>;
++							assigned-clock-rates = <IMX585_MCLK_FREQ>;
++							vana-supply = <&imx585_vana>;
++							vdig-supply = <&imx585_vdig>;
++							vddl-supply = <&imx585_vddl>;
+ 							/* Active area for IMX585 */
+ 							physical_w = "11.13";
+ 							physical_h = "6.26";
+@@ -200,6 +244,8 @@
+ 										status = "okay";
+ 										port-index = <1>;
+ 										bus-width = <4>; /* 4 lanes */
++										/* f_link = IMX585_LANE_RATE / 2 = 594 MHz (CSI-2 DDR clock ÷ 2) */
++										link-frequencies = /bits/ 64 <IMX585_LINK_FREQ>;
+ 										data-lanes = <1 2 3 4>; /* optional: specify lane mapping */
+ 										remote-endpoint = <&imx585_csi_in0>;
+ 									};
+@@ -221,6 +267,17 @@
+ 							compatible = "sony,imx585";
+ 							reg = <0x1a>;
+ 							devnode = "video1";
++							clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>,
++							         <&bpmp TEGRA234_CLK_PLLP_OUT0>;
++							clock-names = "extperiph1", "pllp_grtba";
++							mclk = "extperiph1";
++							clock-frequency = <IMX585_MCLK_FREQ>;
++							assigned-clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>;
++							assigned-clock-parents = <&bpmp TEGRA234_CLK_PLLP_OUT0>;
++							assigned-clock-rates = <IMX585_MCLK_FREQ>;
++							vana-supply = <&imx585_vana>;
++							vdig-supply = <&imx585_vdig>;
++							vddl-supply = <&imx585_vddl>;
+ 							physical_w = "11.13";
+ 							physical_h = "6.26";
+ 							sensor_model = "imx585";
+@@ -273,6 +330,8 @@
+ 										status = "okay";
+ 										port-index = <2>;
+ 										bus-width = <4>; /* 4 lanes */
++										/* f_link = IMX585_LANE_RATE / 2 = 594 MHz (CSI-2 DDR clock ÷ 2) */
++										link-frequencies = /bits/ 64 <IMX585_LINK_FREQ>;
+ 										data-lanes = <1 2 3 4>; /* optional: specify lane mapping */
+ 										remote-endpoint = <&imx585_csi_in1>;
+ 									};

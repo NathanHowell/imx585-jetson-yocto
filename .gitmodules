@@ -1,0 +1,8 @@
+[submodule "imx585-jetson-driver"]
+	path = imx585-jetson-driver
+	url = https://github.com/Kurokesu/imx585-jetson-driver
+	branch = main
+[submodule "imx585-v4l2-driver"]
+	path = imx585-v4l2-driver
+	url = https://github.com/NathanHowell/imx585-v4l2-driver
+	branch = jetson-overlay-6.12.y

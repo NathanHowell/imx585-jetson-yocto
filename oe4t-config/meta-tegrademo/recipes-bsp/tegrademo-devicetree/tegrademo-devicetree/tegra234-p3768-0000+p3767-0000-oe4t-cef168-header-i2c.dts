@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Overlay enabling the CEF168 lens controller on the 40-pin header I2C bus.
+// Jetson Nano 40-pin header pinout for this overlay:
+//   Pin 1  (3V3)  -> CEF168 VCC (red)
+//   Pin 6  (GND)  -> CEF168 GND (black)
+//   Pin 3  (I2C1 SDA / gen1_i2c_sda_pi4) -> CEF168 SDA (yellow)
+//   Pin 5  (I2C1 SCL / gen1_i2c_scl_pi3) -> CEF168 SCL (green)
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/pinctrl/pinctrl-tegra.h>
+#include <dt-bindings/tegra234-p3767-0000-common.h>
+
+/ {
+    overlay-name = "CEF168 on 40-pin header";
+    compatible = JETSON_COMPATIBLE_P3768;
+};
+
+&cam_i2cmux {
+    i2c@0 {
+        cef168@d {
+            status = "disabled";
+        };
+    };
+};
+
+&pinctrl {
+    cef168_ext_i2c1_pins: cef168-ext-i2c1-pins {
+        nvidia,pins = "gen1_i2c_sda_pi4", "gen1_i2c_scl_pi3";
+        nvidia,function = "i2c1";
+        nvidia,tristate = <TEGRA_PIN_DISABLE>;
+        nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+        nvidia,pull = <TEGRA_PIN_PULL_UP>;
+    };
+};
+
+&gen1_i2c {
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&cef168_ext_i2c1_pins>;
+
+    cef168_header@0d {
+        compatible = "pinefeat,cef168";
+        reg = <0x0d>;
+        vcc-supply = <&vdd_3v3_ao>;
+        status = "okay";
+    };
+};
