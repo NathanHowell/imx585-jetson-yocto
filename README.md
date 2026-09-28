@@ -25,6 +25,6 @@ but the camera never came up: a NULL dereference in
 with an NVIDIA-camera-framework device tree. Choosing between the two driver
 lineages is the open decision; `meta-imx585/PORTING.md` frames it.
 
-Caveat on `IMX585-YOCTO-NOTES.md` §8: its Path A / Path B split treats tegracam
-and a modern kernel as mutually exclusive. They are not — see the kernel note
-in `kas/README.md`. That section needs rewriting.
+`IMX585-YOCTO-NOTES.md` §8 frames that decision. Note §8.1 in particular: the
+kernel version is *not* the axis it looks like, because NVIDIA's out-of-tree
+camera stack builds against mainline `linux-yocto` too.

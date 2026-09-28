@@ -15,6 +15,9 @@ Collected 2026-09-17. Sections marked **VERIFY** are inferences or have not been
 - **Yocto on Jetson is official as of JetPack 7.2.** NVIDIA supports it through OE4T `meta-tegra`.
   - The `wrynose` branch (Yocto 6.0 LTS) and `master` both target **JetPack 7.2.1 / L4T R39.2.1**.
   - Default kernel is **`linux-noble-nvidia-tegra` 6.8.12**. **`linux-yocto` 6.18** is an option.
+  - The kernel choice does **not** gate the NVIDIA camera stack: `nvidia-kernel-oot` builds
+    against either kernel and skips only two Realtek wifi drivers on `linux-yocto`. The driver
+    framework, not the kernel version, is the real decision. See §8.1.
 - **The IMX585 has no phase-detect (PDAF) pixels.** Autofocus has to be contrast-detect, or use an external distance sensor.
 - **Linear raw options:**
   - RAW12 at up to **60 fps** full frame.
@@ -350,68 +353,174 @@ The will127534 git history removed ClearHDR once and later re-added it (`7b7265f
 
 ## 8. Adaptation plan for a current Yocto image
 
-### Choose a path
+### 8.1 Correction: the kernel is not the decision
 
-| | **Path A: NVIDIA stack (recommended for Argus/ISP)** | **Path B: mainline-style** |
+An earlier draft of this section split the work into "Path A: NVIDIA stack, older
+kernel" and "Path B: mainline-style, modern kernel", as though tegracam and a
+current kernel were mutually exclusive. **They are not.** The two choices are
+independent axes, and conflating them made the tegracam route look more costly
+than it is.
+
+`nvidia-kernel-oot` on `wrynose` is:
+
+```bitbake
+COMPATIBLE_MACHINE = "(tegra)"
+TEGRA_OOT_MODULE_SKIP_MAKEFLAGS_LINUX_YOCTO = "\
+    NV_OOT_REALTEK_RTL8822CE_SKIP_BUILD=y \
+    NV_OOT_REALTEK_RTL8852CE_SKIP_BUILD=y \
+"
+```
+
+No kernel restriction, and the only modules skipped when building against
+`linux-yocto` are two Realtek wifi drivers. `tegracam`, VI, NVCSI and
+`tegra-camera-platform` build either way. `TEGRA_USING_VENDOR_KERNEL` likewise
+only gates wifi/ethernet `RRECOMMENDS` in `p3768.inc` / `p3737.inc` / `p4071.inc`
+— it does not gate the camera stack.
+
+So choosing mainline does not forfeit Argus. What it costs is NVIDIA's support
+statement and the well-trodden path. **VERIFY:** this is read from the recipes,
+not observed. "meta-tegra does not skip it" proves it *builds*, not that the
+capture path is equally well tested there.
+
+The two axes, then:
+
+| Axis | Options | Weight |
 |---|---|---|
-| Kernel | `linux-noble-nvidia-tegra` 6.8 (default) | `linux-yocto` 6.18 (or newer) |
-| Driver | port `nv_imx585.c` (`tegracam`) | IMX585 variant of the shared STARVIS 2 driver (`imx678.c` + RFC) |
-| Capture | VI (non-media-controller), Argus, `nvarguscamerasrc`, `nvv4l2camerasrc` | media-controller / libcamera. **VERIFY** that Tegra VI in media-controller mode works with meta-tegra on 6.18 |
-| HDR / RAW16 | raw V4L2 path likely needed | add ClearHDR yourself |
+| **Driver framework** | `tegracam` / `camera_common` **vs** upstream-style V4L2 subdev | **This is the decision.** It determines the device tree, the capture path, and whether Argus works at all. |
+| Kernel | `linux-noble-nvidia-tegra` 6.8.12 (meta-tegra's default on `wrynose`) **vs** `linux-yocto` 6.18 | Secondary. Reversible; one `PREFERRED_PROVIDER` line. |
+
+### 8.2 Framework comparison
+
+| | **Option 1: tegracam (recommended)** | **Option 2: upstream-style** |
+|---|---|---|
+| Driver | Kurokesu `nv_imx585.c`, or finish the conversion of will127534's driver (§8.4) | IMX585 variant of the shared STARVIS 2 driver (`imx678.c` + RFC) |
+| Device tree | NVIDIA camera bindings: `tegra-camera-platform`, `cam_i2cmux`, `modeX` properties | `sony,imx678.yaml` style: `clocks`, `*-supply`, `reset-gpios`, `link-frequencies` |
+| Capture | VI (non-media-controller), Argus, `nvarguscamerasrc`, `nvv4l2camerasrc` | media-controller / libcamera. **VERIFY** Tegra VI in media-controller mode under meta-tegra |
+| HDR / RAW16 | raw V4L2 path likely still needed | add ClearHDR yourself |
 | Effort | low to medium | high |
+| Known-good on | JetPack 6.2.1/6.2.2 (kernel 5.15) — **not** yet on 6.8 | nothing on Tegra |
 
-### Path A steps
+Mixing halves is what broke the last attempt: an upstream-style subdev against an
+NVIDIA-framework device tree, crashing on a NULL deref in
+`__v4l2_subdev_state_get_format()` because Tegra VI calls `get_fmt` before
+`sd->active_state` exists. See §3.2.
 
-1. **Layers:** `poky` (wrynose) + `meta-openembedded` + `meta-tegra` (wrynose). Optionally start from `tegra-demo-distro`.
-   - `MACHINE = "jetson-orin-nano-devkit-nvme"` (or your carrier's machine).
-2. **Kernel module recipe.** Choose one:
-   - **A1 (simplest):** add `nv_imx585.c` and `imx585_mode_tbls.h` to `nvidia-kernel-oot` as a patch via `EXTRA_PATCHES`, next to `nv_imx477.c`.
-     - Add the object to the matching kbuild Makefile.
-     - It then inherits NVIDIA's `conftest.h` and gets packaged alongside the other camera drivers.
-     - **VERIFY** the path inside `nvidia-oot`, e.g. `drivers/media/i2c/`.
-   - **A2 (separate recipe):**
-     ```bitbake
-     SUMMARY = "Sony IMX585 tegracam sensor driver"
-     LICENSE = "GPL-2.0-only"
-     inherit module
-     DEPENDS += "nvidia-kernel-oot"
-     COMPATIBLE_MACHINE = "(tegra)"
-     SRC_URI = "file://nv_imx585.c file://imx585_mode_tbls.h file://Makefile file://conftest.h"
-     S = "${UNPACKDIR}"
-     EXTRA_OEMAKE += "KBUILD_EXTRA_SYMBOLS=${STAGING_INCDIR}/nvidia-kernel-oot/Module.symvers"
-     # Kbuild: obj-m += nv_imx585.o ; ccflags-y += -I${STAGING_INCDIR}/nvidia-kernel-oot -I$(src)
-     RPROVIDES:${PN} += "kernel-module-nv-imx585"
-     KERNEL_MODULE_AUTOLOAD += "nv_imx585"
-     ```
-     - `conftest.h`: generate it once with Kurokesu's `scripts/conftest.sh` against the target kernel, or delete the `#if defined(NV_...)` guards for the one kernel you build. On 6.8, probe takes one argument and remove returns `void`.
-     - **VERIFY** the include layout matches `<media/tegracam_core.h>` under `${STAGING_INCDIR}/nvidia-kernel-oot`.
-3. **Device tree:**
-   - Take `tegra234-p3767-camera-p3768-imx585-C.dts` (4-lane cam1) or `-A.dts` (2-lane cam0).
-   - Build it through a `virtual/dtbo` recipe (§7.3), or merge the fragment into a custom `virtual/dtb`.
-   - Apply with `TEGRA_PLUGIN_MANAGER_OVERLAYS:append:<machine>` or `UBOOT_EXTLINUX_FDTOVERLAYS`.
-   - The `#include <dt-bindings/tegra234-p3767-0000-common.h>` header comes from NVIDIA's DT sources, which `nvidia-kernel-oot` installs to `/usr/src/device-tree`. `tegra-devicetree.bbclass` should handle the include paths. **VERIFY.**
-   - While editing, apply the §3.4 DT fixes: `max_gain_val="300"`, and new modes for higher link rates, RAW10, and HDR.
-4. **Image contents:**
-   - `nvidia-kernel-oot-cameras`, your module
-   - `tegra-libraries-camera` (Argus)
-   - `gstreamer1.0-plugins-nvarguscamerasrc` and/or `gstreamer1.0-plugins-nvv4l2camerasrc`
-   - `v4l-utils`, `i2c-tools`
-5. **Bring-up checks:**
-   - `dmesg | grep -i imx585`: probe passed and subdev registered.
-   - `i2cdetect` on the camera mux bus: device at `0x1a` (cam1 is behind `cam_i2cmux/i2c@1`).
-   - `i2cget` of `0x3000` → `0x01` in standby; of `0x4D1C/0x4D1D` after `STANDBY=0` + 80 ms (F4 test).
-   - `v4l2-ctl -d /dev/video0 --list-formats-ext`, then `--stream-mmap --stream-count=30 --stream-to=f.raw`.
-   - Test pattern first (`test_mode=5`, horizontal color bars), then real frames.
-   - Argus: `nvarguscamerasrc sensor-id=0 ! ... ` at the default 25 fps, then the higher-rate modes.
-6. **Driver improvements, in order:** F2/F3 (stream order), F1 (gain cap), F5 (1782 Mbps, 60 fps mode), RAW10 at 90 fps, embedded data (`0x303A` + `embedded_metadata_height="1"`, **VERIFY** on VI), Clear HDR RAW16.
+### 8.3 Project scaffolding
 
-### Path B steps (outline)
+Already in this repo, unbuilt:
 
-1. Kernel: `PREFERRED_PROVIDER_virtual/kernel = "linux-yocto"` (6.18 on wrynose). Check that `tegra-kernel-cache` enables the Tegra camera stack.
+- `kas/` — wrynose (Yocto 6.0 LTS) + meta-tegra `wrynose` = JetPack 7.2.1 / L4T
+  R39.2.1, `MACHINE = jetson-orin-nano-devkit-nvme`, kernel left at meta-tegra's
+  default. `kas/include/kernel-linux-yocto.yml` flips axis 2.
+- `meta-imx585/` — the IMX585 and CEF168 recipes, the overlay, the full DTs, an
+  image, under a minimal `imx585` distro.
+- `meta-imx585/PORTING.md` — every known R36.4/6.12 → R39.2.1/6.8.12 item.
+
+Layer note: there is **no poky repo**. Poky has no `wrynose` branch — its newest
+release branch is `walnascar` (5.2) — so the base is `openembedded-core`
+(`wrynose`) plus `bitbake` (`2.18`, per wrynose's `BB_MIN_VERSION = "2.18.0"`).
+That matches `LAYERDEPENDS_tegra = "core"` anyway.
+
+### 8.4 Option 1 steps (tegracam)
+
+**Step 0 — pick a starting point.** Three, in rough order of promise:
+
+- **Kurokesu `nv_imx585.c`** (`imx585-jetson-driver/`). tegracam-native and known
+  to work, but only on JetPack 6.2.1/6.2.2: kernel 5.15, Ubuntu 22.04 headers,
+  a Makefile hardcoding `3rdparty/canonical/linux-jammy/kernel-source`, and a DTS
+  patched from `/etc/nv_tegra_release`. The Yocto packaging discards all of that
+  regardless; the real work is the 5.15 → 6.8 tegracam API delta.
+- **Finish the archived conversion.** 25 commits in
+  `oe4t-config/archive/patches/imx585-v4l2-driver/` convert will127534's driver
+  to tegracam, ending at `13947db imx585: seed sensor_mode_properties for
+  tegracam`. `0003`–`0015` are bpftrace debug churn; `0016`–`0025` are the real
+  work, `0022 tegracam: wire imx585 driver into tegra stack` most of all. Never
+  reached a working stream, and was written against 6.12.
+- **Start clean** from `nv_imx477.c` in `nvidia-oot`, using the Kurokesu driver
+  and §9 as references. Most work, fewest inherited assumptions.
+
+**Step 1 — kernel module recipe.** Choose one:
+
+- **1a (simplest):** add `nv_imx585.c` and `imx585_mode_tbls.h` to
+  `nvidia-kernel-oot` as a patch via `EXTRA_PATCHES`, next to `nv_imx477.c`.
+  - Add the object to the matching kbuild Makefile.
+  - It then inherits NVIDIA's `conftest.h` and is packaged with the other camera
+    drivers.
+  - **VERIFY** the path inside `nvidia-oot`, e.g. `drivers/media/i2c/`.
+- **1b (separate recipe):**
+  ```bitbake
+  SUMMARY = "Sony IMX585 tegracam sensor driver"
+  LICENSE = "GPL-2.0-only"
+  inherit module
+  DEPENDS += "nvidia-kernel-oot"
+  COMPATIBLE_MACHINE = "(tegra)"
+  SRC_URI = "file://nv_imx585.c file://imx585_mode_tbls.h file://Makefile file://conftest.h"
+  S = "${UNPACKDIR}"
+  EXTRA_OEMAKE += "KBUILD_EXTRA_SYMBOLS=${STAGING_INCDIR}/nvidia-kernel-oot/Module.symvers"
+  # Kbuild: obj-m += nv_imx585.o ; ccflags-y += -I${STAGING_INCDIR}/nvidia-kernel-oot -I$(src)
+  RPROVIDES:${PN} += "kernel-module-nv-imx585"
+  KERNEL_MODULE_AUTOLOAD += "nv_imx585"
+  ```
+  - `conftest.h`: generate it once with Kurokesu's `scripts/conftest.sh` against
+    the target kernel, or delete the `#if defined(NV_...)` guards for the one
+    kernel you build. On 6.8, probe takes one argument and remove returns `void`.
+  - **VERIFY** the include layout matches `<media/tegracam_core.h>` under
+    `${STAGING_INCDIR}/nvidia-kernel-oot`.
+  - The archived `d824dd2 imx585: pull tegracam symbols from OOT Module.symvers`
+    is this same `KBUILD_EXTRA_SYMBOLS` problem, already solved once.
+
+**Step 2 — device tree.**
+- Take `tegra234-p3767-camera-p3768-imx585-C.dts` (4-lane cam1) or `-A.dts`
+  (2-lane cam0) from `imx585-jetson-driver/`.
+- Or start from `meta-imx585/recipes-bsp/imx585-devicetree/`, whose
+  `…-oe4t-imx585-cef168.dts` already has hand-written `tegra-camera-platform` and
+  `cam_i2cmux` nodes registering both the sensor (`v4l2_sensor`) and the CEF168
+  (`v4l2_lens`) — the most reusable artifact from the old tree.
+- Build through a `virtual/dtbo` recipe (§7.3), or merge into a custom
+  `virtual/dtb`. Apply with `TEGRA_PLUGIN_MANAGER_OVERLAYS:append:<machine>` or
+  `UBOOT_EXTLINUX_FDTOVERLAYS`.
+- `#include <dt-bindings/tegra234-p3767-0000-common.h>` comes from NVIDIA's DT
+  sources, which `nvidia-kernel-oot` still stages to `/usr/src/device-tree` on
+  `wrynose`. The `t23x` subtree layout under R39.2.1 is **VERIFY**.
+- While editing, apply the §3.4 DT fixes: `max_gain_val="300"`, and new modes for
+  higher link rates, RAW10, and HDR.
+
+**Step 3 — image contents.** `nvidia-kernel-oot-cameras`, your module,
+`tegra-libraries-camera` (Argus),
+`gstreamer1.0-plugins-nvarguscamerasrc` and/or `-nvv4l2camerasrc`, `v4l-utils`,
+`i2c-tools`. Note `nvidia-kernel-oot-alsa` shrank on JetPack 7.2 (Tegra ASoC
+drivers moved in-tree), so a verbatim copy of an older packagegroup will fail on
+missing packages.
+
+**Step 4 — bring-up checks.**
+- `dmesg | grep -i imx585`: probe passed and subdev registered.
+- `i2cdetect` on the camera mux bus: device at `0x1a` (cam1 is behind
+  `cam_i2cmux/i2c@1`).
+- `i2cget` of `0x3000` → `0x01` in standby; of `0x4D1C/0x4D1D` after
+  `STANDBY=0` + 80 ms (F4 test).
+- `v4l2-ctl -d /dev/video0 --list-formats-ext`, then
+  `--stream-mmap --stream-count=30 --stream-to=f.raw`.
+- Test pattern first (`test_mode=5`, horizontal colour bars), then real frames.
+- Argus: `nvarguscamerasrc sensor-id=0 ! …` at the default 25 fps, then the
+  higher-rate modes.
+- Flashing changed: R39.2 supports **`initrd-flash` only**.
+
+**Step 5 — driver improvements, in order.** F2/F3 (stream order), F1 (gain cap),
+F5 (1782 Mbps, 60 fps mode), RAW10 at 90 fps, embedded data (`0x303A` +
+`embedded_metadata_height="1"`, **VERIFY** on VI), Clear HDR RAW16.
+
+### 8.5 Option 2 steps (upstream-style, outline)
+
+1. Kernel: `kas build kas/imx585.yml:kas/include/kernel-linux-yocto.yml`. Check
+   that `tegra-kernel-cache` (branch `yocto-6.18`) enables the Tegra camera stack.
 2. Driver:
-   - Backport `drivers/media/i2c/imx678.c` from 7.3 together with Dave Stevenson's STARVIS 2 RFC (variant struct).
-   - Add an `imx585` variant: native and active areas, min HMAX table, IMX585 common registers from will127534 or Sony's sheet, gain register `0x306C`, ID value if F4 checks out.
-   - It may need helpers newer than 6.18, such as `devm_v4l2_sensor_clk_get` and `v4l2_link_freq_to_bitmap`. **VERIFY** each against 6.18.
+   - Backport `drivers/media/i2c/imx678.c` from 7.3 together with Dave
+     Stevenson's STARVIS 2 RFC (variant struct).
+   - Add an `imx585` variant: native and active areas, min HMAX table, IMX585
+     common registers from will127534 or Sony's sheet, gain register `0x306C`,
+     ID value if F4 checks out.
+   - It may need helpers newer than 6.18, such as `devm_v4l2_sensor_clk_get` and
+     `v4l2_link_freq_to_bitmap`. **VERIFY** each against 6.18.
 3. DT, following the `sony,imx678.yaml` style:
    ```dts
    camera@1a {
@@ -424,9 +533,14 @@ The will127534 git history removed ClearHDR once and later re-added it (`7b7265f
    };
    imx585_osc: clock-imx585 { compatible = "fixed-clock"; #clock-cells = <0>; clock-frequency = <24000000>; };
    ```
-   - Note: `devm_v4l2_sensor_clk_get()` only creates a fixed clock from `clock-frequency` on non-DT or legacy platforms. On DT it returns `-ENOENT` without `clocks` (`v4l2-common.c`, 7.3).
-   - GPIO polarity: upstream treats XCLR as active-low reset (`GPIOD_OUT_HIGH` = held in reset). Kurokesu's overlay uses `GPIO_ACTIVE_HIGH` with the logic inverted in the driver. Pick one convention and stick to it.
-4. Userspace: libcamera needs a sensor helper and tuning files, plus a Tegra pipeline handler. **VERIFY** one exists; this may block Path B.
+   - Note: `devm_v4l2_sensor_clk_get()` only creates a fixed clock from
+     `clock-frequency` on non-DT or legacy platforms. On DT it returns `-ENOENT`
+     without `clocks` (`v4l2-common.c`, 7.3).
+   - GPIO polarity: upstream treats XCLR as active-low reset (`GPIOD_OUT_HIGH` =
+     held in reset). Kurokesu's overlay uses `GPIO_ACTIVE_HIGH` with the logic
+     inverted in the driver. Pick one convention and stick to it.
+4. Userspace: libcamera needs a sensor helper and tuning files, plus a Tegra
+   pipeline handler. **VERIFY** one exists; this may block the whole option.
 5. Watch upstream:
    - STARVIS 2 common driver (IMX585 listed as future)
    - raw sensor model and metadata series (embedded data, crop, binning)
@@ -494,8 +608,9 @@ Register overlap with the IMX585 (confirmed against the will127534 and Kurokesu 
    - What are the exact include paths for `tegracam_core.h`?
    - Does `tegra-devicetree.bbclass` resolve `dt-bindings/tegra234-p3767-0000-common.h`?
 8. Jetson-IO on R39: header name string for the CSI connector (22pin vs 24pin) if using runtime overlays.
-9. Path B: is there a libcamera pipeline handler for Tegra VI? How complete is the camera config in `tegra-kernel-cache` on linux-yocto 6.18?
-10. Obtain from Kurokesu, Khadas, or Sony: *IMX585_Standard_Register_Setting.xlsx*, *Software Reference Manual*, *Clear HDR* and *DOL-HDR* application notes.
+9. Option 2 (§8.5): is there a libcamera pipeline handler for Tegra VI? How complete is the camera config in `tegra-kernel-cache` on linux-yocto 6.18?
+10. Does the NVIDIA OOT camera stack actually *work* on `linux-yocto` 6.18, not merely build? `nvidia-kernel-oot` does not skip it (§8.1), but that is read from the recipe; no capture has been observed on a mainline kernel.
+11. Obtain from Kurokesu, Khadas, or Sony: *IMX585_Standard_Register_Setting.xlsx*, *Software Reference Manual*, *Clear HDR* and *DOL-HDR* application notes.
 
 ---
 
