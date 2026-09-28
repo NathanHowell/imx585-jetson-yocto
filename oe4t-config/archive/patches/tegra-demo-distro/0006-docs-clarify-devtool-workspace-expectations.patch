@@ -1,0 +1,29 @@
+From c5a1b92bc2165d1139edb01ad90685c8ed19eee5 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 16:13:56 -0700
+Subject: [PATCH 6/7] docs: clarify devtool workspace expectations
+
+---
+ AGENTS.md | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 70bf992..cd12e38 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -26,9 +26,10 @@
+ - Expect benign “Fixed dependency cycle” messages from Tegra ACONNECT; focus on sensor logs and VI errors.
+ 
+ ## Devtool Workflow (default for drivers & overlays)
+-- Use `devtool modify <recipe>` as the first step for any sensor driver or overlay work (already active for `imx585-v4l2-driver` and `imx585-overlay`). This keeps patches out of the layer until we deliberately finish.
++- Always keep an active devtool workspace for in-flight components. For the IMX585 bring-up, ensure `devtool modify imx585-v4l2-driver` stays active until the driver is fully functional; if the workspace rolls to `workspace/attic`, immediately rerun `devtool modify` to rehydrate it before continuing.
++- Use `devtool modify <recipe>` as the first step for any sensor driver or overlay work (currently `imx585-v4l2-driver` and `imx585-overlay`). This keeps patches out of the layer until we deliberately finish.
+ - Edit live sources under `build/workspace/sources/<recipe>` and rebuild quickly with `bitbake -c compile <recipe> -f` (or include additional targets as needed).
+-- Once testing is complete, run `devtool finish <recipe> layers/meta-tegrademo` to export the diff as proper patches, then `devtool reset <recipe>` after the changes are merged. Nathan owns the upstream git repos and will push final commits once the Yocto patches are generated.
++- Only after the feature is verified end-to-end should we run `devtool finish <recipe> layers/meta-tegrademo` to export the diff as proper patches, followed by `devtool reset <recipe>` after the changes are merged. Nathan owns the upstream git repos and will push final commits once the Yocto patches are generated.
+ - Follow the same pattern for upcoming work (e.g., CEF168 driver + overlay) to avoid churn from repeatedly refreshing patches during iteration.
+ 
+ ## Pending Debug Tasks
+-- 
+2.47.3
+

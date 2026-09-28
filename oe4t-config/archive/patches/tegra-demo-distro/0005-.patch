@@ -1,0 +1,25 @@
+From f08c04c3590401f245b7f6ceef2fbd989c502415 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 15:59:49 -0700
+Subject: [PATCH 5/7] ...
+
+---
+ .../0001-imx585-add-extensive-debug-instrumentation.patch       | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-add-extensive-debug-instrumentation.patch b/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-add-extensive-debug-instrumentation.patch
+index 818d7ac..b3a4b92 100644
+--- a/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-add-extensive-debug-instrumentation.patch
++++ b/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-add-extensive-debug-instrumentation.patch
+@@ -3,6 +3,8 @@ From: Nathan Howell <nathan.d.howell@gmail.com>
+ Date: Mon, 6 Oct 2025 15:48:25 -0700
+ Subject: [PATCH] imx585: add extensive debug instrumentation
+ 
++Upstream-Status: Inappropriate [local debug instrumentation]
++
+ ---
+  imx585.c | 122 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
+  1 file changed, 111 insertions(+), 11 deletions(-)
+-- 
+2.47.3
+

@@ -1,0 +1,15 @@
+diff --git a/layers/meta-tegrademo/recipes-core/images/orin-console-image.bb b/layers/meta-tegrademo/recipes-core/images/orin-console-image.bb
+index b820c98..c88f53b 100644
+--- a/layers/meta-tegrademo/recipes-core/images/orin-console-image.bb
++++ b/layers/meta-tegrademo/recipes-core/images/orin-console-image.bb
+@@ -13,8 +13,8 @@ CORE_IMAGE_BASE_INSTALL += "packagegroup-orin-console"
+ # Ensure useful admin tools remain available on the target
+ CORE_IMAGE_BASE_INSTALL += "bash-completion"
+ 
+-# Provide dtc utilities (dtc, fdtget, fdtdump) on the target
+-IMAGE_INSTALL:append = " tegra-tools-tegrastats dtc"
++# Provide dtc utilities (dtc, fdtget, fdtdump) and camrtc debug module on the target
++IMAGE_INSTALL:append = " tegra-tools-tegrastats dtc nv-kernel-module-rtcpu-debug"
+ 
+ KERNEL_MODULE_AUTOLOAD:append = " imx585 cef168"
+ 

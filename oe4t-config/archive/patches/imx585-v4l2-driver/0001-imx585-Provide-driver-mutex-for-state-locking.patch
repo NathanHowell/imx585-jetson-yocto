@@ -1,0 +1,82 @@
+From c1fc4b531024a3296952757bb79b670c9519719d Mon Sep 17 00:00:00 2001
+From: Nathan's Assistant <codex@example.com>
+Date: Sun, 5 Jan 2025 00:00:00 +0000
+Subject: [PATCH 01/25] imx585: Provide driver mutex for state locking
+
+Tegra's capture stack calls into the sensor before user space has a
+chance to program it, so the subdev must expose a valid `state_lock`.
+The driver tried to reuse the control handler lock but never allocated a
+mutex, which left the pointer NULL and crashed Tegra's async notifier.
+
+Wire up a dedicated mutex in the driver, hand it to both the control
+handler and the subdev, and tear it down on failure/driver removal. This
+protects the media state setup and resolves the boot-time oops.
+
+Upstream-Status: Pending [awaiting upstream submission]
+Signed-off-by: Nathan's Assistant <codex@example.com>
+---
+ imx585.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/imx585.c b/imx585.c
+index 1e1e815..703f791 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -11,6 +11,7 @@
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+ #include <linux/of_graph.h>
++#include <linux/mutex.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/unaligned.h>
+@@ -543,6 +544,7 @@ struct imx585 {
+ 	struct gpio_desc *reset_gpio;
+ 	struct regulator_bulk_data supplies[IMX585_NUM_SUPPLIES];
+ 
++	struct mutex lock;
+ 	struct v4l2_ctrl_handler ctrl_handler;
+ 
+ 	/* Controls */
+@@ -1041,6 +1043,10 @@ static int imx585_init_controls(struct imx585 *imx585)
+ 	int ret;
+ 
+ 	ret = v4l2_ctrl_handler_init(hdl, 32);
++	if (ret)
++		return ret;
++
++	hdl->lock = &imx585->lock;
+ 
+ 	/* Read-only, updated per mode */
+ 	imx585->pixel_rate = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
+@@ -1619,7 +1625,10 @@ static int imx585_probe(struct i2c_client *client)
+ 	if (!imx585)
+ 		return -ENOMEM;
+ 
++	mutex_init(&imx585->lock);
++
+ 	v4l2_i2c_subdev_init(&imx585->sd, client, &imx585_subdev_ops);
++	imx585->sd.state_lock = &imx585->lock;
+ 	imx585->clientdev = dev;
+ 	strscpy(imx585->sd.name, "imx585", sizeof(imx585->sd.name));
+ 	strscpy(imx585->sd.entity.name, "imx585", sizeof(imx585->sd.entity.name));
+@@ -1725,6 +1734,7 @@ err_pm:
+ 	pm_runtime_disable(dev);
+ 	pm_runtime_set_suspended(dev);
+ err_power_off:
++	mutex_destroy(&imx585->lock);
+ 	imx585_power_off(dev);
+ 	return ret;
+ }
+@@ -1743,6 +1753,8 @@ static void imx585_remove(struct i2c_client *client)
+ 	if (!pm_runtime_status_suspended(imx585->clientdev))
+ 		imx585_power_off(imx585->clientdev);
+ 	pm_runtime_set_suspended(imx585->clientdev);
++
++	mutex_destroy(&imx585->lock);
+ }
+ 
+ static DEFINE_RUNTIME_DEV_PM_OPS(imx585_pm_ops, imx585_power_off,
+-- 
+2.47.3
+

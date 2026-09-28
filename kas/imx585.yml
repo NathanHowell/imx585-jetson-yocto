@@ -1,0 +1,33 @@
+# Default build: Jetson Orin Nano devkit (NVMe rootfs), JetPack 7.2.1,
+# NVIDIA's supported kernel (linux-noble-nvidia-tegra 6.8.12).
+#
+#   kas build kas/imx585.yml
+#
+# The kernel is NOT pinned here on purpose: linux-noble-nvidia-tegra is already
+# meta-tegra's PREFERRED_PROVIDER_virtual/kernel on wrynose, so taking the
+# default is what "NVIDIA supported kernel" means. See include/kernel-linux-yocto.yml
+# to switch to mainline instead.
+header:
+  version: 14
+  includes:
+    - kas/include/base.yml
+
+distro: imx585
+machine: jetson-orin-nano-devkit-nvme
+
+target:
+  - imx585-console-image
+
+local_conf_header:
+  imx585: |
+    # Keep dtc symbols so device tree overlays can be applied at boot.
+    KERNEL_DTC_FLAGS += "-@"
+
+    # Set this to your public key to get a usable login on first boot.
+    # SSH_USER_AUTHORIZED_KEY = "ssh-ed25519 AAAA..."
+
+  shared: |
+    # Point these at persistent storage; they are the difference between a
+    # 4-hour rebuild and a 4-minute one. The old tree's build dir was 266G.
+    # DL_DIR = "/path/to/yocto/downloads"
+    # SSTATE_DIR = "/path/to/yocto/sstate-cache"

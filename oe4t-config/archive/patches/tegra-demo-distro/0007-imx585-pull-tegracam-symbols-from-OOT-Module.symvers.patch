@@ -1,0 +1,64 @@
+From d824dd2452e510f09d14c5fddd3f4e9e4d4b0424 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Tue, 7 Oct 2025 19:06:42 -0700
+Subject: [PATCH 7/7] imx585: pull tegracam symbols from OOT Module.symvers
+
+---
+ .../appends/imx585-v4l2-driver.bbappend       | 45 +++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+ create mode 100644 build/workspace/appends/imx585-v4l2-driver.bbappend
+
+diff --git a/build/workspace/appends/imx585-v4l2-driver.bbappend b/build/workspace/appends/imx585-v4l2-driver.bbappend
+new file mode 100644
+index 0000000..c364a2a
+--- /dev/null
++++ b/build/workspace/appends/imx585-v4l2-driver.bbappend
+@@ -0,0 +1,45 @@
++FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
++FILESPATH:prepend := "/home/nathan/tegra-demo-distro/build/workspace/sources/imx585-v4l2-driver/oe-local-files:"
++# srctreebase: /home/nathan/tegra-demo-distro/build/workspace/sources/imx585-v4l2-driver
++
++inherit externalsrc
++# NOTE: We use pn- overrides here to avoid affecting multiple variants in the case where the recipe uses BBCLASSEXTEND
++EXTERNALSRC:pn-imx585-v4l2-driver = "/home/nathan/tegra-demo-distro/build/workspace/sources/imx585-v4l2-driver"
++EXTERNALSRC_BUILD:pn-imx585-v4l2-driver = "/home/nathan/tegra-demo-distro/build/workspace/sources/imx585-v4l2-driver"
++
++DEPENDS:append = " nvidia-kernel-oot"
++
++do_compile[depends] += "nvidia-kernel-oot:do_compile"
++
++python __anonymous () {
++    extra = d.getVar('KBUILD_EXTRA_SYMBOLS') or ""
++    path = d.expand("${WORKDIR}/nvidia-module.symvers")
++    if path not in extra.split():
++        if extra:
++            extra = extra + " " + path
++        else:
++            extra = path
++        d.setVar('KBUILD_EXTRA_SYMBOLS', extra)
++}
++
++# initial_rev .: 10660487018e7e46dbc3e493da7ebee1065f429f
++# commit .: c1fc4b531024a3296952757bb79b670c9519719d
++# commit .: f3d117e80986b4765928120c5f7f54e0a2238709
++
++do_compile:prepend() {
++    machine_workdir=$(echo ${MACHINE} | tr '-' '_')
++    SYM_SRC=$(find ${TMPDIR}/work/${machine_workdir}-oe4t-linux/nvidia-kernel-oot \
++        -type f -name Module.symvers -path "*nvidia-oot*/Module.symvers" 2>/dev/null | head -n 1)
++    if [ -n "${SYM_SRC}" ]; then
++        bbnote "Using NVIDIA Module.symvers from ${SYM_SRC}"
++        install -Dm0644 "${SYM_SRC}" ${WORKDIR}/nvidia-module.symvers
++        export KBUILD_EXTRA_SYMBOLS=${WORKDIR}/nvidia-module.symvers
++    else
++        bbwarn "nvidia Module.symvers not found; build may fail to resolve tegracam symbols"
++        export KBUILD_EXTRA_SYMBOLS=
++    fi
++}
++
++do_install:append() {
++	rm -f ${D}${includedir}/${PN}/Module.symvers
++}
+-- 
+2.47.3
+

@@ -1,0 +1,134 @@
+From b32659fc588fd43b08143158daeb6ddb1d3d3601 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Tue, 7 Oct 2025 09:58:00 -0700
+Subject: [PATCH 20/25] imx585: keep control state populated for Tegra VI
+
+---
+ imx585.c | 71 ++++++++++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 53 insertions(+), 18 deletions(-)
+
+diff --git a/imx585.c b/imx585.c
+index ebee8e5..e6fb473 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -708,6 +708,47 @@ static void imx585_update_hmax(struct imx585 *imx585)
+ 	}
+ }
+ 
++static u64 imx585_calc_pixel_rate(const struct imx585_mode *mode, u32 hmax);
++
++static void imx585_ctrl_set_s32(struct v4l2_ctrl *ctrl, s32 value)
++{
++	if (!ctrl)
++		return;
++
++	if (ctrl->p_new.p_s32)
++		*ctrl->p_new.p_s32 = value;
++	if (ctrl->p_cur.p_s32)
++		*ctrl->p_cur.p_s32 = value;
++	ctrl->val = value;
++	ctrl->cur.val = value;
++}
++
++static void imx585_ctrl_set_s64(struct v4l2_ctrl *ctrl, s64 value)
++{
++	if (!ctrl)
++		return;
++
++	if (ctrl->p_new.p_s64)
++		*ctrl->p_new.p_s64 = value;
++	if (ctrl->p_cur.p_s64)
++		*ctrl->p_cur.p_s64 = value;
++}
++
++static void imx585_update_pixel_rate(struct imx585 *imx585,
++					const struct imx585_mode *mode,
++					u32 hmax)
++{
++	u64 pixel_rate;
++
++	if (!imx585 || !mode || !imx585->pixel_rate)
++		return;
++
++	pixel_rate = imx585_calc_pixel_rate(mode, hmax);
++	__v4l2_ctrl_modify_range(imx585->pixel_rate,
++				 pixel_rate, pixel_rate, 1, pixel_rate);
++	imx585_ctrl_set_s64(imx585->pixel_rate, pixel_rate);
++}
++
+ static void imx585_set_framing_limits(struct imx585 *imx585,
+ 				      const struct imx585_mode *mode)
+ {
+@@ -724,6 +765,7 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
+ 	do_div(pixel_rate, mode->min_hmax);
+ 	__v4l2_ctrl_modify_range(imx585->pixel_rate, pixel_rate, pixel_rate, 1,
+ 				 pixel_rate);
++	imx585_ctrl_set_s64(imx585->pixel_rate, pixel_rate);
+ 
+ 	max_hblank = (u64)IMX585_HMAX_MAX * pixel_rate;
+ 	do_div(max_hblank, IMX585_PIXEL_RATE);
+@@ -759,22 +801,6 @@ static u64 imx585_calc_pixel_rate(const struct imx585_mode *mode, u32 hmax)
+ 	return pixel_rate;
+ }
+ 
+-static u32 imx585_calc_hblank_from_hmax(const struct imx585_mode *mode, u32 hmax)
+-{
+-	u64 line_pixels;
+-
+-	if (!mode->width || !mode->min_hmax)
+-		return 0;
+-
+-	line_pixels = (u64)hmax * mode->width;
+-	do_div(line_pixels, mode->min_hmax);
+-
+-	if (line_pixels <= mode->width)
+-		return 0;
+-
+-	return line_pixels - mode->width;
+-}
+-
+ static void imx585_update_hmax_from_hblank(struct imx585 *imx585,
+ 					   const struct imx585_mode *mode,
+ 					   u32 hblank)
+@@ -788,6 +814,8 @@ static void imx585_update_hmax_from_hblank(struct imx585 *imx585,
+ 		hmax = div_u64(scaled, mode->width);
+ 
+ 	imx585->hmax = clamp_t(u32, hmax, 1, IMX585_HMAX_MAX);
++	imx585_ctrl_set_s32(imx585->hblank, hblank);
++	imx585_update_pixel_rate(imx585, mode, imx585->hmax);
+ }
+ 
+ static void imx585_update_vblank_limits(struct imx585 *imx585,
+@@ -801,9 +829,11 @@ static void imx585_update_vblank_limits(struct imx585 *imx585,
+ 			       IMX585_EXPOSURE_MIN, max_exposure);
+ 
+ 	imx585->vmax = vmax;
++	imx585_ctrl_set_s32(imx585->vblank, vblank);
+ 
+ 	__v4l2_ctrl_modify_range(imx585->exposure, IMX585_EXPOSURE_MIN,
+ 				 max_exposure, 1, cur_exposure);
++	imx585_ctrl_set_s32(imx585->exposure, cur_exposure);
+ }
+ 
+ /* --------------------------------------------------------------------------
+@@ -828,10 +858,15 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
+ 				      fmt->width, fmt->height);
+ 
+ 	switch (ctrl->id) {
+-	case V4L2_CID_PIXEL_RATE:
+-		/* Cached during framing setup; nothing else to do. */
++	case V4L2_CID_PIXEL_RATE: {
++		u32 hmax = imx585->hmax ? imx585->hmax : mode->min_hmax;
++		u64 pixel_rate = imx585_calc_pixel_rate(mode, hmax);
++
++		imx585_ctrl_set_s64(ctrl, pixel_rate);
+ 		return 0;
++	}
+ 	case V4L2_CID_LINK_FREQ:
++		imx585_ctrl_set_s64(ctrl, link_freqs[imx585->link_freq_idx]);
+ 		return 0;
+ 	case V4L2_CID_VBLANK: {
+ 		u32 vblank = clamp_t(u32, ctrl->val, ctrl->minimum, ctrl->maximum);
+-- 
+2.47.3
+

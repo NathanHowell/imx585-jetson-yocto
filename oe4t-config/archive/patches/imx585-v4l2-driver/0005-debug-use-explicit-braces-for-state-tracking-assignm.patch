@@ -1,0 +1,28 @@
+From cbe3273292457807fade8513563b8c59a10a9f6a Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:01:01 -0700
+Subject: [PATCH 05/25] debug: use explicit braces for state tracking
+ assignment
+
+---
+ debug/trace-imx585-active-state.bt | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index ea40a9e..df94203 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -59,8 +59,9 @@ kretprobe:v4l2_subdev_init_finalize
+                retval, $sd, $state,
+                $state ? $state->lock : 0,
+                $state ? $state->pads : 0);
+-        if ($state)
++        if ($state) {
+             @imx585_state = (u64)$state;
++        }
+     }
+ }
+ 
+-- 
+2.47.3
+

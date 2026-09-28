@@ -1,0 +1,293 @@
+From 16b27cf3c622e5e3ed44fbd6fd21659ce1c54071 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 15:48:25 -0700
+Subject: [PATCH] imx585: add extensive debug instrumentation
+
+Upstream-Status: Inappropriate [local debug instrumentation]
+
+---
+ imx585.c | 122 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 111 insertions(+), 11 deletions(-)
+
+diff --git a/imx585.c b/imx585.c
+index 703f791..6d34900 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -4,6 +4,7 @@
+  *
+  */
+ 
++#include <linux/atomic.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+@@ -1047,6 +1048,8 @@ static int imx585_init_controls(struct imx585 *imx585)
+ 		return ret;
+ 
+ 	hdl->lock = &imx585->lock;
++	dev_dbg(imx585->clientdev,
++		"init_controls: handler=%p lock=%p\n", hdl, hdl->lock);
+ 
+ 	/* Read-only, updated per mode */
+ 	imx585->pixel_rate = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
+@@ -1113,6 +1116,8 @@ static int imx585_init_controls(struct imx585 *imx585)
+ 	ret = v4l2_ctrl_new_fwnode_properties(hdl, &imx585_ctrl_ops, &props);
+ 	if (ret)
+ 		goto err_free;
++	dev_dbg(imx585->clientdev,
++		"init_controls: fw properties applied (handler=%p)\n", hdl);
+ 
+ 	/* Set the default value for ClearHDR thresholds */
+ 	memcpy(imx585->datasel_th_ctrl->p_cur.p, hdr_thresh_def, sizeof(hdr_thresh_def));
+@@ -1123,10 +1128,14 @@ static int imx585_init_controls(struct imx585 *imx585)
+ 	imx585->hdr_mode->flags |= V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+ 
+ 	imx585->sd.ctrl_handler = hdl;
++	dev_dbg(imx585->clientdev,
++		"init_controls: success (handler=%p)\n", hdl);
+ 	return 0;
+ 
+ err_free:
+ 	v4l2_ctrl_handler_free(hdl);
++	dev_dbg(imx585->clientdev,
++		"init_controls: error path ret=%d (handler=%p)\n", ret, hdl);
+ 	return ret;
+ }
+ 
+@@ -1199,17 +1208,30 @@ static int imx585_enum_frame_size(struct v4l2_subdev *sd,
+ }
+ 
+ static int imx585_set_pad_format(struct v4l2_subdev *sd,
+-				 struct v4l2_subdev_state *sd_state,
+-				 struct v4l2_subdev_format *fmt)
++			 struct v4l2_subdev_state *sd_state,
++			 struct v4l2_subdev_format *fmt)
+ {
+ 	struct imx585 *imx585 = to_imx585(sd);
+ 	const struct imx585_mode *mode_list, *mode;
+ 	unsigned int num_modes;
+ 	struct v4l2_mbus_framefmt *format;
++	struct v4l2_subdev_state *active = imx585->sd.active_state;
++
++	dev_dbg(imx585->clientdev,
++		"set_pad_format: which=%u pad=%u state=%p active-state=%p (lock=%p pads=%p)\n",
++		fmt ? fmt->which : 0, fmt ? fmt->pad : 0,
++		sd_state, active,
++		active ? active->lock : NULL,
++		active ? active->pads : NULL);
++
++	if (!sd_state)
++		dev_warn(imx585->clientdev,
++			"set_pad_format called with NULL state (which=%u)\n",
++			fmt ? fmt->which : 0);
+ 
+ 	get_mode_table(imx585, fmt->format.code, &mode_list, &num_modes);
+ 	mode = v4l2_find_nearest_size(mode_list, num_modes, width, height,
+-				      fmt->format.width, fmt->format.height);
++			      fmt->format.width, fmt->format.height);
+ 
+ 	fmt->format.width        = mode->width;
+ 	fmt->format.height       = mode->height;
+@@ -1219,12 +1241,24 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
+ 	fmt->format.quantization = V4L2_QUANTIZATION_FULL_RANGE;
+ 	fmt->format.xfer_func    = V4L2_XFER_FUNC_NONE;
+ 
+-	format = v4l2_subdev_state_get_format(sd_state, 0);
++	if (sd_state)
++		format = v4l2_subdev_state_get_format(sd_state, 0);
++	else
++		format = NULL;
++	if (!format) {
++		dev_warn(imx585->clientdev,
++			"set_pad_format: no format storage (state=%p which=%u)\n",
++			sd_state, fmt ? fmt->which : 0);
++		return -EINVAL;
++	}
+ 
+ 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
+ 		imx585_set_framing_limits(imx585, mode);
+ 
+ 	*format = fmt->format;
++	dev_dbg(imx585->clientdev,
++		"set_pad_format: format code=0x%x %ux%u stored in %p\n",
++		format->code, format->width, format->height, format);
+ 	return 0;
+ }
+ 
+@@ -1234,21 +1268,29 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
+  */
+ 
+ static int imx585_enable_streams(struct v4l2_subdev *sd,
+-				 struct v4l2_subdev_state *state, u32 pad,
+-				 u64 streams_mask)
++			 struct v4l2_subdev_state *state, u32 pad,
++			 u64 streams_mask)
+ {
+ 	struct imx585 *imx585 = to_imx585(sd);
+ 	const struct imx585_mode *mode_list, *mode;
+ 	struct v4l2_subdev_state *st;
+ 	struct v4l2_mbus_framefmt *fmt;
+ 	unsigned int n_modes;
++	unsigned int fmt_width, fmt_height;
++	u32 fmt_code;
++	bool state_locked = false;
+ 	int ret;
+ 
++	dev_dbg(imx585->clientdev,
++		"enable_streams: state=%p pad=%u mask=0x%llx active-state=%p\n",
++		state, pad, streams_mask, imx585->sd.active_state);
++
+ 	ret = pm_runtime_get_sync(imx585->clientdev);
+ 	if (ret < 0) {
+ 		pm_runtime_put_noidle(imx585->clientdev);
+ 		return ret;
+ 	}
++	dev_dbg(imx585->clientdev, "enable_streams: runtime get ret=%d\n", ret);
+ 
+ 	ret = cci_multi_reg_write(imx585->regmap, common_regs,
+ 				  ARRAY_SIZE(common_regs), NULL);
+@@ -1297,11 +1339,41 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
+ 
+ 	/* Select mode */
+ 	st  = v4l2_subdev_get_locked_active_state(&imx585->sd);
++	if (!st) {
++		dev_err(imx585->clientdev,
++			"enable_streams: failed to lock active state (sd->active_state=%p)\n",
++			imx585->sd.active_state);
++		ret = -EINVAL;
++		goto err_rpm_put;
++	}
++	state_locked = true;
++	dev_dbg(imx585->clientdev,
++		"enable_streams: locked state=%p lock=%p pads=%p\n",
++		st, st->lock, st->pads);
++
+ 	fmt = v4l2_subdev_state_get_format(st, 0);
++	if (!fmt) {
++		dev_err(imx585->clientdev,
++			"enable_streams: no active format for pad0 (state=%p)\n",
++			st);
++		ret = -EINVAL;
++		goto err_unlock_state;
++	}
++
++	fmt_code = fmt->code;
++	fmt_width = fmt->width;
++	fmt_height = fmt->height;
++	dev_dbg(imx585->clientdev,
++		"enable_streams: active fmt code=0x%x %ux%u\n",
++		fmt_code, fmt_width, fmt_height);
+ 
+-	get_mode_table(imx585, fmt->code, &mode_list, &n_modes);
++	v4l2_subdev_unlock_state(st);
++	state_locked = false;
++	st = NULL;
++
++	get_mode_table(imx585, fmt_code, &mode_list, &n_modes);
+ 	mode = v4l2_find_nearest_size(mode_list, n_modes, width, height,
+-				      fmt->width, fmt->height);
++			      fmt_width, fmt_height);
+ 
+ 	ret = cci_multi_reg_write(imx585->regmap, mode->reg_list.regs,
+ 				  mode->reg_list.num_of_regs, NULL);
+@@ -1318,7 +1390,7 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
+ 			goto err_rpm_put;
+ 		}
+ 		/* 16-bit: linear; 12-bit: enable gradation compression */
+-		switch (fmt->code) {
++		switch (fmt_code) {
+ 		case MEDIA_BUS_FMT_SRGGB16_1X16:
+ 		case MEDIA_BUS_FMT_SGRBG16_1X16:
+ 		case MEDIA_BUS_FMT_SGBRG16_1X16:
+@@ -1359,7 +1431,7 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
+ 
+ 	dev_info(imx585->clientdev, "Streaming started\n");
+ 	usleep_range(IMX585_STREAM_DELAY_US,
+-		     IMX585_STREAM_DELAY_US + IMX585_STREAM_DELAY_RANGE_US);
++		 IMX585_STREAM_DELAY_US + IMX585_STREAM_DELAY_RANGE_US);
+ 
+ 	/* vflip, hflip and HDR cannot change during streaming */
+ 	__v4l2_ctrl_grab(imx585->vflip, true);
+@@ -1368,6 +1440,9 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
+ 
+ 	return 0;
+ 
++err_unlock_state:
++	if (state_locked)
++		v4l2_subdev_unlock_state(st);
+ err_rpm_put:
+ 	pm_runtime_put_autosuspend(imx585->clientdev);
+ 	return ret;
+@@ -1488,11 +1563,22 @@ static int imx585_init_state(struct v4l2_subdev *sd,
+ 			.height = supported_modes[0].height,
+ 		},
+ 	};
++	struct v4l2_subdev_state *active = imx585->sd.active_state;
++
++	dev_dbg(imx585->clientdev,
++		"init_state: state=%p lock=%p pads=%p active-state(now)=%p\n",
++		state,
++		state ? state->lock : NULL,
++		state ? state->pads : NULL,
++		active);
+ 
+ 	imx585_set_pad_format(sd, state, &fmt);
+ 
+ 	crop = v4l2_subdev_state_get_crop(state, 0);
+ 	*crop = supported_modes[0].crop;
++	dev_dbg(imx585->clientdev,
++		"init_state: default crop %ux%u@(%u,%u) stored at %p\n",
++		crop->width, crop->height, crop->left, crop->top, crop);
+ 
+ 	return 0;
+ }
+@@ -1632,6 +1718,10 @@ static int imx585_probe(struct i2c_client *client)
+ 	imx585->clientdev = dev;
+ 	strscpy(imx585->sd.name, "imx585", sizeof(imx585->sd.name));
+ 	strscpy(imx585->sd.entity.name, "imx585", sizeof(imx585->sd.entity.name));
++	dev_dbg(dev,
++		"probe: subdev=%p state_lock=%p ctrl_lock(pending)=%p\n",
++		&imx585->sd, imx585->sd.state_lock,
++		imx585->ctrl_handler.lock);
+ 
+ 	dev_info(dev, "Reading dtoverlay config:\n");
+ 	imx585->mono = of_property_read_bool(dev->of_node, "mono-mode");
+@@ -1692,6 +1782,8 @@ static int imx585_probe(struct i2c_client *client)
+ 	pm_runtime_enable(dev);
+ 	pm_runtime_set_autosuspend_delay(dev, 1000);
+ 	pm_runtime_use_autosuspend(dev);
++	dev_dbg(dev, "probe: runtime pm enabled (usage_count=%d)\n",
++		atomic_read(&dev->power.usage_count));
+ 
+ 	ret = imx585_init_controls(imx585);
+ 	if (ret)
+@@ -1708,6 +1800,8 @@ static int imx585_probe(struct i2c_client *client)
+ 		dev_err(dev, "entity pads init failed: %d\n", ret);
+ 		goto err_ctrls;
+ 	}
++	dev_dbg(dev, "probe: media entity pads initialised (pads=%u)\n",
++		imx585->sd.entity.num_pads);
+ 
+ 	imx585->sd.state_lock = imx585->ctrl_handler.lock;
+ 	ret = v4l2_subdev_init_finalize(&imx585->sd);
+@@ -1715,7 +1809,13 @@ static int imx585_probe(struct i2c_client *client)
+ 		dev_err_probe(dev, ret, "subdev init\n");
+ 		goto err_entity;
+ 	}
++	dev_info(dev, "probe: subdev init finalized (active_state=%p lock=%p pads=%p)\n",
++		imx585->sd.active_state,
++		imx585->sd.active_state ? imx585->sd.active_state->lock : NULL,
++		imx585->sd.active_state ? imx585->sd.active_state->pads : NULL);
+ 
++	dev_dbg(dev, "probe: registering sensor (flags=0x%x)\n",
++		imx585->sd.flags);
+ 	ret = v4l2_async_register_subdev_sensor(&imx585->sd);
+ 	if (ret) {
+ 		dev_err(dev, "sensor subdev register failed: %d\n", ret);
+@@ -1780,4 +1880,4 @@ module_i2c_driver(imx585_i2c_driver);
+ MODULE_AUTHOR("Will Whang <will@willwhang.com>");
+ MODULE_AUTHOR("Tetsuya Nomura <tetsuya.nomura@soho-enterprise.com>");
+ MODULE_DESCRIPTION("Sony IMX585 sensor driver");
+-MODULE_LICENSE("GPL");
+\ No newline at end of file
++MODULE_LICENSE("GPL");

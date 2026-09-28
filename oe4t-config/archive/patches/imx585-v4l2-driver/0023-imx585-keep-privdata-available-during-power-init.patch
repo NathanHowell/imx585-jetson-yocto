@@ -1,0 +1,40 @@
+From e3dca19f8cb8e867e1ebbdaf17a1f76f8f4e8c31 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Tue, 7 Oct 2025 18:47:42 -0700
+Subject: [PATCH 23/25] imx585: keep privdata available during power init
+
+---
+ imx585.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/imx585.c b/imx585.c
+index 484c4cc..a85e4fc 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -389,7 +389,13 @@ static const struct regmap_config imx585_regmap_config = {
+ 
+ static inline struct imx585 *tegracam_to_imx585(struct tegracam_device *tc_dev)
+ {
+-	return (struct imx585 *)tegracam_get_privdata(tc_dev);
++	struct imx585 *priv;
++
++	priv = (struct imx585 *)tegracam_get_privdata(tc_dev);
++	if (priv)
++		return priv;
++
++	return i2c_get_clientdata(tc_dev->client);
+ }
+ 
+ static inline u32 imx585_get_min_hmax(const struct imx585 *priv,
+@@ -822,6 +828,8 @@ static int imx585_probe(struct i2c_client *client)
+ 	priv->dev = dev;
+ 	priv->client = client;
+ 
++	i2c_set_clientdata(client, priv);
++
+ 	tc_dev = devm_kzalloc(dev, sizeof(*tc_dev), GFP_KERNEL);
+ 	if (!tc_dev)
+ 		return -ENOMEM;
+-- 
+2.47.3
+

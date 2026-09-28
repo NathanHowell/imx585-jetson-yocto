@@ -1,0 +1,49 @@
+From da9850917d3542963456031237bac2a229d86ab4 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 16:56:11 -0700
+Subject: [PATCH 04/25] debug: fix bpftrace syntax for init helpers
+
+---
+ debug/trace-imx585-active-state.bt | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index e317742..ea40a9e 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -44,9 +44,10 @@ kprobe:v4l2_subdev_init_finalize
+ {
+     $sd = (struct v4l2_subdev *)arg0;
+     $tracked = (struct v4l2_subdev *)@imx585_sd;
+-    if ($tracked && $sd == $tracked)
++    if ($tracked && $sd == $tracked) {
+         printf("init_finalize(entry): sd=%p name=%s state_lock=%p flags=0x%x\n",
+                $sd, str($sd->name), $sd->state_lock, $sd->flags);
++    }
+ }
+ kretprobe:v4l2_subdev_init_finalize
+ {
+@@ -68,16 +69,18 @@ kprobe:v4l2_subdev_get_locked_active_state
+ {
+     $sd = (struct v4l2_subdev *)arg0;
+     $tracked = (struct v4l2_subdev *)@imx585_sd;
+-    if ($tracked && $sd == $tracked)
++    if ($tracked && $sd == $tracked) {
+         printf("get_locked_active_state(entry): sd=%p active_state=%p state_lock=%p\n",
+                $sd, $sd->active_state, $sd->state_lock);
++    }
+ }
+ kretprobe:v4l2_subdev_get_locked_active_state
+ {
+     $sd = (struct v4l2_subdev *)arg0;
+     $tracked = (struct v4l2_subdev *)@imx585_sd;
+-    if ($tracked && $sd == $tracked)
++    if ($tracked && $sd == $tracked) {
+         printf("get_locked_active_state(exit): ret=%p\n", retval);
++    }
+ }
+ 
+ /* Core helper that currently crashes – dump state, lock and pads. */
+-- 
+2.47.3
+

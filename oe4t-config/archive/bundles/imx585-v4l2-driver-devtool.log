@@ -1,0 +1,25 @@
+13947db imx585: seed sensor_mode_properties for tegracam
+3325d28 imx585: power-cycle sensor during board setup
+e3dca19 imx585: keep privdata available during power init
+6a2f201 tegracam: wire imx585 driver into tegra stack
+8d09ef8 imx585: cache active format for Tegra pad queries
+b32659f imx585: keep control state populated for Tegra VI
+4b0eb3f imx585: seed timing controls for tegra bindings
+6966406 imx585: harden active state format init and fallback get_fmt
+f331cbf imx585: provide get_fmt fallback for empty pad configs
+26c4e3b imx585: seed active state pad format after init finalize
+fbe9a05 debug: drop init_finalize hooks and rely on state alloc tracing
+ba74e64 debug: log subdev state alloc and tegra bitmap entry stack
+29f7e81 debug: capture init_finalize active_state and expand bitmap init logs
+b64b90f debug: focus on format helper and auto-detect tracked state
+ff532b5 debug: revert to int64 pointer tracking for legacy bpftrace
+fbcfe90 debug: namespace probes and use uint64 comparisons
+1b361bf debug: cast pointer tracking to int64 for bpftrace
+9bbb986 debug: add braces for bpftrace conditional logging
+427bf4f debug: simplify bpftrace script for legacy interpreters
+11f67b7 debug: add braces to __v4l2_subdev_state_get_format exit log
+cbe3273 debug: use explicit braces for state tracking assignment
+da98509 debug: fix bpftrace syntax for init helpers
+e82d88b debug: add bpftrace helper for imx585 active state
+f3d117e imx585: add extensive debug instrumentation
+c1fc4b5 imx585: Provide driver mutex for state locking

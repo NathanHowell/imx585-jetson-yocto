@@ -1,0 +1,82 @@
+From ff532b59109493b05f637a3c6854614ceb6401f2 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:13:51 -0700
+Subject: [PATCH 11/25] debug: revert to int64 pointer tracking for legacy
+ bpftrace
+
+---
+ debug/trace-imx585-active-state.bt | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index 7415529..745c736 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -12,8 +12,8 @@ BEGIN
+ 
+ kprobe:imx585:imx585_init_state
+ {
+-    @imx585_sd = (uint64)arg0;
+-    @imx585_state = (uint64)arg1;
++    @imx585_sd = (int64)arg0;
++    @imx585_state = (int64)arg1;
+     printf("imx585_init_state: sd=%p state=%p\n", arg0, arg1);
+ }
+ 
+@@ -32,7 +32,7 @@ kprobe:imx585:imx585_remove
+ kprobe:v4l2_subdev_init_finalize
+ {
+     @entry_init_finalize[tid] = arg0;
+-    if (@imx585_sd && (uint64)arg0 == @imx585_sd) {
++    if (@imx585_sd && (int64)arg0 == @imx585_sd) {
+         printf("init_finalize(entry): sd=%p\n", arg0);
+     }
+ }
+@@ -42,7 +42,7 @@ kretprobe:v4l2_subdev_init_finalize
+     $sd = @entry_init_finalize[tid];
+     delete(@entry_init_finalize[tid]);
+ 
+-    if (@imx585_sd && (uint64)$sd == @imx585_sd) {
++    if (@imx585_sd && (int64)$sd == @imx585_sd) {
+         printf("init_finalize(exit): ret=%d sd=%p tracked_state=%p\n",
+                retval, $sd, @imx585_state);
+     }
+@@ -51,7 +51,7 @@ kretprobe:v4l2_subdev_init_finalize
+ kprobe:v4l2_subdev_get_locked_active_state
+ {
+     @entry_locked_state[tid] = arg0;
+-    if (@imx585_sd && (uint64)arg0 == @imx585_sd) {
++    if (@imx585_sd && (int64)arg0 == @imx585_sd) {
+         printf("get_locked_active_state(entry): sd=%p\n", arg0);
+     }
+ }
+@@ -61,7 +61,7 @@ kretprobe:v4l2_subdev_get_locked_active_state
+     $sd = @entry_locked_state[tid];
+     delete(@entry_locked_state[tid]);
+ 
+-    if (@imx585_sd && (uint64)$sd == @imx585_sd) {
++    if (@imx585_sd && (int64)$sd == @imx585_sd) {
+         printf("get_locked_active_state(exit): ret=%p\n", retval);
+     }
+ }
+@@ -74,7 +74,7 @@ kprobe:__v4l2_subdev_state_get_format
+         printf("__v4l2_subdev_state_get_format(state=NULL pad=%lu stream=%lu)\n",
+                arg1, arg2);
+         printf("  caller stack:\n%s\n", kstack());
+-    } else if (@imx585_state && (uint64)arg0 == @imx585_state) {
++    } else if (@imx585_state && (int64)arg0 == @imx585_state) {
+         printf("__v4l2_subdev_state_get_format(entry): state=%p pad=%lu stream=%lu\n",
+                arg0, arg1, arg2);
+     }
+@@ -87,7 +87,7 @@ kretprobe:__v4l2_subdev_state_get_format
+ 
+     if ($state == 0) {
+         printf("__v4l2_subdev_state_get_format(exit): state=NULL fmt=%p\n", retval);
+-    } else if (@imx585_state && (uint64)$state == @imx585_state) {
++    } else if (@imx585_state && (int64)$state == @imx585_state) {
+         printf("__v4l2_subdev_state_get_format(exit): state=%p fmt=%p\n",
+                $state, retval);
+     }
+-- 
+2.47.3
+

@@ -1,0 +1,44 @@
+# Layer pins shared by every kas config in this tree.
+#
+# wrynose is Yocto 6.0 LTS. On meta-tegra that branch is JetPack 7.2.1 /
+# Jetson Linux R39.2.1, the first release supporting both Orin and Thor.
+#
+# Note there is no poky here. The poky combo repo has no wrynose branch (its
+# newest release branch is walnascar / 5.2), so this builds on openembedded-core
+# plus bitbake directly -- which is what meta-tegra actually declares:
+# LAYERDEPENDS_tegra = "core", and its README names openembedded-core wrynose.
+header:
+  version: 14
+
+defaults:
+  repos:
+    branch: wrynose
+
+repos:
+  # This repo. With no url/path, kas treats the checkout it was invoked from as
+  # a repo, so meta-imx585 is used in place and stays editable.
+  imx585:
+    layers:
+      meta-imx585:
+
+  openembedded-core:
+    url: https://git.openembedded.org/openembedded-core
+    layers:
+      meta:
+
+  # Not a layer. kas locates bitbake by finding bin/bitbake in a checked-out
+  # repo. wrynose sets BB_MIN_VERSION = "2.18.0", hence this branch.
+  bitbake:
+    url: https://git.openembedded.org/bitbake
+    branch: "2.18"
+
+  meta-tegra:
+    url: https://github.com/OE4T/meta-tegra.git
+
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    layers:
+      meta-oe:
+      meta-python:
+      meta-networking:
+      meta-filesystems:

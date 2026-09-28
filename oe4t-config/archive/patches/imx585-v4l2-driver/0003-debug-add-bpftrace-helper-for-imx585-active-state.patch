@@ -1,0 +1,151 @@
+From e82d88bd6f8dea6e897f224bfd50165fdf500046 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 16:54:22 -0700
+Subject: [PATCH 03/25] debug: add bpftrace helper for imx585 active state
+
+---
+ debug/trace-imx585-active-state.bt | 132 +++++++++++++++++++++++++++++
+ 1 file changed, 132 insertions(+)
+ create mode 100755 debug/trace-imx585-active-state.bt
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+new file mode 100755
+index 0000000..e317742
+--- /dev/null
++++ b/debug/trace-imx585-active-state.bt
+@@ -0,0 +1,132 @@
++#!/usr/bin/env bpftrace
++/*
++ * trace-imx585-active-state.bt
++ *
++ * Trace the V4L2 subdev state handoff between the imx585 driver and the
++ * Tegra VI/graph framework. Prints the key pointer values as the subdevice is
++ * initialised and whenever the VI queries the active format so we can catch
++ * NULL-state dereferences.
++ *
++ * Usage:
++ *   sudo bpftrace debug/trace-imx585-active-state.bt
++ *   # In another shell trigger the camera pipeline (e.g. `modprobe imx585`).
++ */
++
++BEGIN
++{
++    printf("Tracing imx585 subdev state usage… ctrl-C to stop\n");
++    @imx585_sd = 0;
++    @imx585_state = 0;
++}
++
++/* Remember the subdev/state pointers as soon as the driver allocates them. */
++kprobe:imx585_init_state
++{
++    @imx585_sd = (u64)arg0;
++    @imx585_state = (u64)arg1;
++    printf("imx585_init_state: sd=%p state=%p\n", arg0, arg1);
++}
++kretprobe:imx585_init_state
++{
++    printf("imx585_init_state -> %d\n", retval);
++}
++
++/* If the module unloads, drop the cached pointers. */
++kprobe:imx585_remove
++{
++    @imx585_sd = 0;
++    @imx585_state = 0;
++    printf("imx585_remove\n");
++}
++
++/* Track the subdev finalisation so we know when active_state is installed. */
++kprobe:v4l2_subdev_init_finalize
++{
++    $sd = (struct v4l2_subdev *)arg0;
++    $tracked = (struct v4l2_subdev *)@imx585_sd;
++    if ($tracked && $sd == $tracked)
++        printf("init_finalize(entry): sd=%p name=%s state_lock=%p flags=0x%x\n",
++               $sd, str($sd->name), $sd->state_lock, $sd->flags);
++}
++kretprobe:v4l2_subdev_init_finalize
++{
++    $sd = (struct v4l2_subdev *)arg0;
++    $tracked = (struct v4l2_subdev *)@imx585_sd;
++    if ($tracked && $sd == $tracked) {
++        $state = $sd->active_state;
++        printf("init_finalize(exit): ret=%d sd=%p active_state=%p lock=%p pads=%p\n",
++               retval, $sd, $state,
++               $state ? $state->lock : 0,
++               $state ? $state->pads : 0);
++        if ($state)
++            @imx585_state = (u64)$state;
++    }
++}
++
++/* Did the framework manage to lock the active state? */
++kprobe:v4l2_subdev_get_locked_active_state
++{
++    $sd = (struct v4l2_subdev *)arg0;
++    $tracked = (struct v4l2_subdev *)@imx585_sd;
++    if ($tracked && $sd == $tracked)
++        printf("get_locked_active_state(entry): sd=%p active_state=%p state_lock=%p\n",
++               $sd, $sd->active_state, $sd->state_lock);
++}
++kretprobe:v4l2_subdev_get_locked_active_state
++{
++    $sd = (struct v4l2_subdev *)arg0;
++    $tracked = (struct v4l2_subdev *)@imx585_sd;
++    if ($tracked && $sd == $tracked)
++        printf("get_locked_active_state(exit): ret=%p\n", retval);
++}
++
++/* Core helper that currently crashes – dump state, lock and pads. */
++kprobe:__v4l2_subdev_state_get_format
++{
++    $state = (struct v4l2_subdev_state *)arg0;
++    $tracked_state = (struct v4l2_subdev_state *)@imx585_state;
++    $sd = $state ? $state->sd : (struct v4l2_subdev *)0;
++
++    if (!$state) {
++        printf("__v4l2_subdev_state_get_format(state=NULL pad=%u stream=%u)\n",
++               (u32)arg1, (u32)arg2);
++        printf("  caller stack:\n%s\n", kstack());
++        @last_null_ts = nsecs;
++        return;
++    }
++
++    if (($tracked_state && $state == $tracked_state) ||
++        ($sd && $sd == (struct v4l2_subdev *)@imx585_sd)) {
++        printf("__v4l2_subdev_state_get_format(entry): state=%p sd=%p name=%s pad=%u stream=%u lock=%p pads=%p\n",
++               $state, $sd, str($sd->name), (u32)arg1, (u32)arg2,
++               $state->lock, $state->pads);
++    }
++}
++kretprobe:__v4l2_subdev_state_get_format
++{
++    $state = (struct v4l2_subdev_state *)arg0;
++    $tracked_state = (struct v4l2_subdev_state *)@imx585_state;
++
++    if (!$state || ($tracked_state && $state == $tracked_state))
++        printf("__v4l2_subdev_state_get_format(exit): state=%p fmt=%p\n",
++               $state, retval);
++}
++
++/* Tegra camera entry points for extra context. */
++kprobe:tegra_channel_init_subdevices
++{
++    printf("tegra_channel_init_subdevices(chan=%p)\n", arg0);
++}
++kretprobe:tegra_channel_init_subdevices
++{
++    printf("tegra_channel_init_subdevices -> %d\n", retval);
++}
++
++kprobe:tegra_channel_fmts_bitmap_init
++{
++    printf("tegra_channel_fmts_bitmap_init(chan=%p)\n", arg0);
++}
++kretprobe:tegra_channel_fmts_bitmap_init
++{
++    printf("tegra_channel_fmts_bitmap_init -> %d\n", retval);
++}
+-- 
+2.47.3
+

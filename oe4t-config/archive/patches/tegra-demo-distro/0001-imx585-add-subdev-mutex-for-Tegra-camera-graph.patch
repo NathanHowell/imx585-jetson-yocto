@@ -1,0 +1,118 @@
+From 7355dcb5a675aa513a18c5f68cb3e4d1f05a6265 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 09:15:21 -0700
+Subject: [PATCH 1/7] imx585: add subdev mutex for Tegra camera graph
+
+---
+ .../imx585/imx585-v4l2-driver.bb              |  4 +
+ ...ovide-driver-mutex-for-state-locking.patch | 81 +++++++++++++++++++
+ 2 files changed, 85 insertions(+)
+ create mode 100644 layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-Provide-driver-mutex-for-state-locking.patch
+
+diff --git a/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver.bb b/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver.bb
+index b26e8f5..485e3aa 100644
+--- a/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver.bb
++++ b/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver.bb
+@@ -4,8 +4,12 @@ HOMEPAGE = "https://github.com/NathanHowell/imx585-v4l2-driver"
+ LICENSE = "MIT"
+ LIC_FILES_CHKSUM = "file://LICENSE;md5=15dc9b4bc755528a250e2bba565d30c6"
+ 
++FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
++
+ require imx585-source.inc
+ 
++SRC_URI += "file://0001-imx585-Provide-driver-mutex-for-state-locking.patch"
++
+ inherit module
+ 
+ DEPENDS += "virtual/kernel"
+diff --git a/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-Provide-driver-mutex-for-state-locking.patch b/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-Provide-driver-mutex-for-state-locking.patch
+new file mode 100644
+index 0000000..25a85f7
+--- /dev/null
++++ b/layers/meta-tegrademo/recipes-kernel/imx585/imx585-v4l2-driver/0001-imx585-Provide-driver-mutex-for-state-locking.patch
+@@ -0,0 +1,81 @@
++From 6a4ebd2b6f9a36f7bdcf1c643881f5d6908601b3 Mon Sep 17 00:00:00 2001
++From: Nathan's Assistant <codex@example.com>
++Date: Sun, 5 Jan 2025 00:00:00 +0000
++Subject: [PATCH] imx585: Provide driver mutex for state locking
++
++Tegra's capture stack calls into the sensor before user space has a
++chance to program it, so the subdev must expose a valid `state_lock`.
++The driver tried to reuse the control handler lock but never allocated a
++mutex, which left the pointer NULL and crashed Tegra's async notifier.
++
++Wire up a dedicated mutex in the driver, hand it to both the control
++handler and the subdev, and tear it down on failure/driver removal. This
++protects the media state setup and resolves the boot-time oops.
++
++Upstream-Status: Pending [awaiting upstream submission]
++Signed-off-by: Nathan's Assistant <codex@example.com>
++---
++ imx585.c | 14 +++++++++++++-
++ 1 file changed, 13 insertions(+), 1 deletion(-)
++
++diff --git a/imx585.c b/imx585.c
++index 1e1e815..7138a83 100644
++--- a/imx585.c
+++++ b/imx585.c
++@@ -11,6 +11,7 @@
++ #include <linux/module.h>
++ #include <linux/of_device.h>
++ #include <linux/of_graph.h>
+++#include <linux/mutex.h>
++ #include <linux/pm_runtime.h>
++ #include <linux/regulator/consumer.h>
++ #include <linux/unaligned.h>
++@@ -543,6 +544,7 @@ struct imx585 {
++ 	struct gpio_desc *reset_gpio;
++ 	struct regulator_bulk_data supplies[IMX585_NUM_SUPPLIES];
++ 
+++	struct mutex lock;
++ 	struct v4l2_ctrl_handler ctrl_handler;
++ 
++ 	/* Controls */
++@@ -1041,6 +1043,10 @@ static int imx585_init_controls(struct imx585 *imx585)
++ 	int ret;
++ 
++ 	ret = v4l2_ctrl_handler_init(hdl, 32);
+++	if (ret)
+++		return ret;
+++
+++	hdl->lock = &imx585->lock;
++ 
++ 	/* Read-only, updated per mode */
++ 	imx585->pixel_rate = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
++@@ -1619,7 +1625,10 @@ static int imx585_probe(struct i2c_client *client)
++ 	if (!imx585)
++ 		return -ENOMEM;
++ 
+++	mutex_init(&imx585->lock);
+++
++ 	v4l2_i2c_subdev_init(&imx585->sd, client, &imx585_subdev_ops);
+++	imx585->sd.state_lock = &imx585->lock;
++ 	imx585->clientdev = dev;
++ 	strscpy(imx585->sd.name, "imx585", sizeof(imx585->sd.name));
++ 	strscpy(imx585->sd.entity.name, "imx585", sizeof(imx585->sd.entity.name));
++@@ -1725,6 +1734,7 @@ err_pm:
++ 	pm_runtime_disable(dev);
++ 	pm_runtime_set_suspended(dev);
++ err_power_off:
+++	mutex_destroy(&imx585->lock);
++ 	imx585_power_off(dev);
++ 	return ret;
++ }
++@@ -1743,6 +1753,8 @@ static void imx585_remove(struct i2c_client *client)
++ 	if (!pm_runtime_status_suspended(imx585->clientdev))
++ 		imx585_power_off(imx585->clientdev);
++ 	pm_runtime_set_suspended(imx585->clientdev);
+++
+++	mutex_destroy(&imx585->lock);
++ }
++ 
++ static DEFINE_RUNTIME_DEV_PM_OPS(imx585_pm_ops, imx585_power_off,
++-- 
++2.43.0
+-- 
+2.47.3
+

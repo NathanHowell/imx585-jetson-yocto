@@ -1,0 +1,29 @@
+From 11f67b7eeea264da5d058e480cbccf9e31a3b605 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:01:37 -0700
+Subject: [PATCH 06/25] debug: add braces to __v4l2_subdev_state_get_format
+ exit log
+
+---
+ debug/trace-imx585-active-state.bt | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index df94203..5fddef8 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -111,9 +111,10 @@ kretprobe:__v4l2_subdev_state_get_format
+     $state = (struct v4l2_subdev_state *)arg0;
+     $tracked_state = (struct v4l2_subdev_state *)@imx585_state;
+ 
+-    if (!$state || ($tracked_state && $state == $tracked_state))
++    if (!$state || ($tracked_state && $state == $tracked_state)) {
+         printf("__v4l2_subdev_state_get_format(exit): state=%p fmt=%p\n",
+                $state, retval);
++    }
+ }
+ 
+ /* Tegra camera entry points for extra context. */
+-- 
+2.47.3
+

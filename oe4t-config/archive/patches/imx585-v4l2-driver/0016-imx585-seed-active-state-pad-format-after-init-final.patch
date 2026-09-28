@@ -1,0 +1,65 @@
+From 26c4e3bf540750f3bc2208fd428478489019e5dd Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:41:08 -0700
+Subject: [PATCH 16/25] imx585: seed active state pad format after init
+ finalize
+
+---
+ imx585.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/imx585.c b/imx585.c
+index 6d34900..38a4e7f 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -15,6 +15,7 @@
+ #include <linux/mutex.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/slab.h>
+ #include <linux/unaligned.h>
+ 
+ #include <media/v4l2-cci.h>
+@@ -1809,6 +1810,39 @@ static int imx585_probe(struct i2c_client *client)
+ 		dev_err_probe(dev, ret, "subdev init\n");
+ 		goto err_entity;
+ 	}
++
++	if (imx585->sd.entity.num_pads && imx585->sd.active_state &&
++	    !imx585->sd.active_state->pads) {
++		struct v4l2_subdev_state *state =
++			v4l2_subdev_get_unlocked_active_state(&imx585->sd);
++		struct v4l2_subdev_format fmt = {
++			.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++			.pad = 0,
++			.format = {
++				.code = imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
++					      : MEDIA_BUS_FMT_SRGGB12_1X12,
++				.width = supported_modes[0].width,
++				.height = supported_modes[0].height,
++				.field = V4L2_FIELD_NONE,
++				.colorspace = V4L2_COLORSPACE_RAW,
++				.ycbcr_enc = V4L2_YCBCR_ENC_601,
++				.quantization = V4L2_QUANTIZATION_FULL_RANGE,
++				.xfer_func = V4L2_XFER_FUNC_NONE,
++			},
++		};
++
++		state->pads = kvcalloc(imx585->sd.entity.num_pads,
++				      sizeof(*state->pads), GFP_KERNEL);
++		if (!state->pads) {
++			ret = -ENOMEM;
++			goto err_entity;
++		}
++
++		imx585_set_pad_format(&imx585->sd, state, &fmt);
++		dev_dbg(dev,
++			"probe: allocated default pad format state=%p pads=%p\n",
++			state, state->pads);
++	}
+ 	dev_info(dev, "probe: subdev init finalized (active_state=%p lock=%p pads=%p)\n",
+ 		imx585->sd.active_state,
+ 		imx585->sd.active_state ? imx585->sd.active_state->lock : NULL,
+-- 
+2.47.3
+

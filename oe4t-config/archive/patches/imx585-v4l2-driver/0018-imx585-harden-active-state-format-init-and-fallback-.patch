@@ -1,0 +1,56 @@
+From 6966406a1893b275010f1f99229a05162d84524a Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:59:03 -0700
+Subject: [PATCH 18/25] imx585: harden active state format init and fallback
+ get_fmt
+
+---
+ imx585.c | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/imx585.c b/imx585.c
+index 5292ad1..0dd9fbe 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -1859,8 +1859,7 @@ static int imx585_probe(struct i2c_client *client)
+ 		goto err_entity;
+ 	}
+ 
+-	if (imx585->sd.entity.num_pads && imx585->sd.active_state &&
+-	    !imx585->sd.active_state->pads) {
++	if (imx585->sd.entity.num_pads && imx585->sd.active_state) {
+ 		struct v4l2_subdev_state *state =
+ 			v4l2_subdev_get_unlocked_active_state(&imx585->sd);
+ 		struct v4l2_subdev_format fmt = {
+@@ -1879,17 +1878,22 @@ static int imx585_probe(struct i2c_client *client)
+ 			},
+ 		};
+ 
+-		state->pads = kvcalloc(imx585->sd.entity.num_pads,
+-				      sizeof(*state->pads), GFP_KERNEL);
+ 		if (!state->pads) {
+-			ret = -ENOMEM;
+-			goto err_entity;
++			state->pads = kvcalloc(imx585->sd.entity.num_pads,
++					      sizeof(*state->pads), GFP_KERNEL);
++			if (!state->pads) {
++				ret = -ENOMEM;
++				goto err_entity;
++			}
++			dev_dbg(dev,
++				"probe: allocated pad storage state=%p pads=%p\n",
++				state, state->pads);
+ 		}
+ 
+ 		imx585_set_pad_format(&imx585->sd, state, &fmt);
+ 		dev_dbg(dev,
+-			"probe: allocated default pad format state=%p pads=%p\n",
+-			state, state->pads);
++			"probe: seeded active format code=0x%x %ux%u\n",
++			fmt.format.code, fmt.format.width, fmt.format.height);
+ 	}
+ 	dev_info(dev, "probe: subdev init finalized (active_state=%p lock=%p pads=%p)\n",
+ 		imx585->sd.active_state,
+-- 
+2.47.3
+

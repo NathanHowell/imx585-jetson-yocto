@@ -1,0 +1,71 @@
+From 29f7e81ac66c132ed132784889bd2ebd8e0870dc Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:23:00 -0700
+Subject: [PATCH 13/25] debug: capture init_finalize active_state and expand
+ bitmap init logs
+
+---
+ debug/trace-imx585-active-state.bt | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index 749da94..a65edc2 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -7,6 +7,7 @@ BEGIN
+ {
+     printf("Tracing imx585 focussed paths… ctrl-C to stop\n");
+     @tracked_state = 0;
++    @init_state = 0;
+ }
+ 
+ kprobe:__v4l2_subdev_state_get_format
+@@ -20,6 +21,11 @@ kprobe:__v4l2_subdev_state_get_format
+         return;
+     }
+ 
++    if (!@tracked_state && @init_state) {
++        @tracked_state = @init_state;
++        printf("tracking subdev state via init finalize=%p\n", (void *)@tracked_state);
++    }
++
+     if (!@tracked_state) {
+         @tracked_state = (int64)arg0;
+         printf("tracking subdev state=%p pad=%lu stream=%lu\n", arg0, arg1, arg2);
+@@ -44,6 +50,15 @@ kretprobe:__v4l2_subdev_state_get_format
+     }
+ }
+ 
++kretprobe:videodev:v4l2_subdev_init_finalize
++{
++    $sd = (struct v4l2_subdev *)arg0;
++    $state = $sd->active_state;
++    @init_state = (int64)$state;
++    printf("v4l2_subdev_init_finalize exit: sd=%p active_state=%p flags=0x%x\n",
++           $sd, $state, $sd->flags);
++}
++
+ kprobe:tegra_channel_init_subdevices
+ {
+     printf("tegra_channel_init_subdevices(chan=%p)\n", arg0);
+@@ -54,12 +69,14 @@ kretprobe:tegra_channel_init_subdevices
+     printf("tegra_channel_init_subdevices -> %d\n", retval);
+ }
+ 
+-kprobe:tegra_channel_fmts_bitmap_init
++kprobe:tegra_camera:tegra_channel_fmts_bitmap_init
+ {
+-    printf("tegra_channel_fmts_bitmap_init(chan=%p)\n", arg0);
++    printf("tegra_channel_fmts_bitmap_init entry: chan=%p tracked_state=%p init_state=%p\n",
++           arg0, (void *)@tracked_state, (void *)@init_state);
++    printf("  caller stack:\n%s\n", kstack());
+ }
+ 
+-kretprobe:tegra_channel_fmts_bitmap_init
++kretprobe:tegra_camera:tegra_channel_fmts_bitmap_init
+ {
+     printf("tegra_channel_fmts_bitmap_init -> %d\n", retval);
+ }
+-- 
+2.47.3
+

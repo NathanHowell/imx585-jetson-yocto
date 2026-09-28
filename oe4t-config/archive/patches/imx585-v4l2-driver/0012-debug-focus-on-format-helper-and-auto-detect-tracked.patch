@@ -1,0 +1,111 @@
+From b64b90fe9d9d43b7e9c2470bf6794ec3cc942843 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:16:39 -0700
+Subject: [PATCH 12/25] debug: focus on format helper and auto-detect tracked
+ state
+
+---
+ debug/trace-imx585-active-state.bt | 73 +++++-------------------------
+ 1 file changed, 12 insertions(+), 61 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index 745c736..749da94 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -5,65 +5,8 @@
+ 
+ BEGIN
+ {
+-    printf("Tracing imx585 subdev state usage… ctrl-C to stop\n");
+-    @imx585_sd = 0;
+-    @imx585_state = 0;
+-}
+-
+-kprobe:imx585:imx585_init_state
+-{
+-    @imx585_sd = (int64)arg0;
+-    @imx585_state = (int64)arg1;
+-    printf("imx585_init_state: sd=%p state=%p\n", arg0, arg1);
+-}
+-
+-kretprobe:imx585:imx585_init_state
+-{
+-    printf("imx585_init_state -> %d\n", retval);
+-}
+-
+-kprobe:imx585:imx585_remove
+-{
+-    @imx585_sd = 0;
+-    @imx585_state = 0;
+-    printf("imx585_remove\n");
+-}
+-
+-kprobe:v4l2_subdev_init_finalize
+-{
+-    @entry_init_finalize[tid] = arg0;
+-    if (@imx585_sd && (int64)arg0 == @imx585_sd) {
+-        printf("init_finalize(entry): sd=%p\n", arg0);
+-    }
+-}
+-
+-kretprobe:v4l2_subdev_init_finalize
+-{
+-    $sd = @entry_init_finalize[tid];
+-    delete(@entry_init_finalize[tid]);
+-
+-    if (@imx585_sd && (int64)$sd == @imx585_sd) {
+-        printf("init_finalize(exit): ret=%d sd=%p tracked_state=%p\n",
+-               retval, $sd, @imx585_state);
+-    }
+-}
+-
+-kprobe:v4l2_subdev_get_locked_active_state
+-{
+-    @entry_locked_state[tid] = arg0;
+-    if (@imx585_sd && (int64)arg0 == @imx585_sd) {
+-        printf("get_locked_active_state(entry): sd=%p\n", arg0);
+-    }
+-}
+-
+-kretprobe:v4l2_subdev_get_locked_active_state
+-{
+-    $sd = @entry_locked_state[tid];
+-    delete(@entry_locked_state[tid]);
+-
+-    if (@imx585_sd && (int64)$sd == @imx585_sd) {
+-        printf("get_locked_active_state(exit): ret=%p\n", retval);
+-    }
++    printf("Tracing imx585 focussed paths… ctrl-C to stop\n");
++    @tracked_state = 0;
+ }
+ 
+ kprobe:__v4l2_subdev_state_get_format
+@@ -74,7 +17,15 @@ kprobe:__v4l2_subdev_state_get_format
+         printf("__v4l2_subdev_state_get_format(state=NULL pad=%lu stream=%lu)\n",
+                arg1, arg2);
+         printf("  caller stack:\n%s\n", kstack());
+-    } else if (@imx585_state && (int64)arg0 == @imx585_state) {
++        return;
++    }
++
++    if (!@tracked_state) {
++        @tracked_state = (int64)arg0;
++        printf("tracking subdev state=%p pad=%lu stream=%lu\n", arg0, arg1, arg2);
++    }
++
++    if (@tracked_state == (int64)arg0) {
+         printf("__v4l2_subdev_state_get_format(entry): state=%p pad=%lu stream=%lu\n",
+                arg0, arg1, arg2);
+     }
+@@ -87,7 +38,7 @@ kretprobe:__v4l2_subdev_state_get_format
+ 
+     if ($state == 0) {
+         printf("__v4l2_subdev_state_get_format(exit): state=NULL fmt=%p\n", retval);
+-    } else if (@imx585_state && (int64)$state == @imx585_state) {
++    } else if (@tracked_state && (int64)$state == @tracked_state) {
+         printf("__v4l2_subdev_state_get_format(exit): state=%p fmt=%p\n",
+                $state, retval);
+     }
+-- 
+2.47.3
+

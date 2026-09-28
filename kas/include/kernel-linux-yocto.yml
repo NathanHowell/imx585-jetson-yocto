@@ -1,0 +1,18 @@
+# Opt-in: build against mainline linux-yocto 6.18 instead of NVIDIA's 6.8.12.
+#
+#   kas build kas/imx585.yml:kas/include/kernel-linux-yocto.yml
+#
+# This is not the fallback it looks like. meta-tegra's nvidia-kernel-oot recipe
+# is COMPATIBLE_MACHINE = "(tegra)" with no kernel restriction, and the only
+# modules it skips against linux-yocto are two Realtek wifi drivers
+# (TEGRA_OOT_MODULE_SKIP_MAKEFLAGS_LINUX_YOCTO). The whole NVIDIA camera stack
+# -- tegracam, VI, NVCSI, tegra-camera-platform -- still builds. So choosing
+# mainline does not cost you Argus. What it does cost is NVIDIA's support
+# statement, and it is the less-travelled path.
+header:
+  version: 14
+
+local_conf_header:
+  kernel: |
+    PREFERRED_PROVIDER_virtual/kernel = "linux-yocto"
+    PREFERRED_VERSION_linux-yocto = "6.18%"

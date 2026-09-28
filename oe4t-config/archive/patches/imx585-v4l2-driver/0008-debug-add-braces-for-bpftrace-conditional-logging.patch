@@ -1,0 +1,90 @@
+From 9bbb986d5d463dcc43da53557904d1829db99b0e Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:06:33 -0700
+Subject: [PATCH 08/25] debug: add braces for bpftrace conditional logging
+
+---
+ debug/trace-imx585-active-state.bt | 26 +++++++++++---------------
+ 1 file changed, 11 insertions(+), 15 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index ca17ba0..59cf4bb 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -1,15 +1,6 @@
+ #!/usr/bin/env bpftrace
+ /*
+  * trace-imx585-active-state.bt
+- *
+- * Trace the V4L2 subdev state handoff between the imx585 driver and the
+- * Tegra VI/graph framework. Prints pointer values as the subdevice is
+- * initialised and whenever the VI queries the active format so we can catch
+- * NULL-state dereferences.
+- *
+- * Usage:
+- *   sudo bpftrace debug/trace-imx585-active-state.bt
+- *   # In another shell trigger the camera pipeline (e.g. `modprobe imx585`).
+  */
+ 
+ BEGIN
+@@ -41,8 +32,9 @@ kprobe:imx585_remove
+ kprobe:v4l2_subdev_init_finalize
+ {
+     @entry_init_finalize[tid] = arg0;
+-    if (@imx585_sd && arg0 == @imx585_sd)
++    if (@imx585_sd && arg0 == @imx585_sd) {
+         printf("init_finalize(entry): sd=%p\n", arg0);
++    }
+ }
+ 
+ kretprobe:v4l2_subdev_init_finalize
+@@ -50,16 +42,18 @@ kretprobe:v4l2_subdev_init_finalize
+     $sd = @entry_init_finalize[tid];
+     delete(@entry_init_finalize[tid]);
+ 
+-    if (@imx585_sd && $sd == @imx585_sd)
++    if (@imx585_sd && $sd == @imx585_sd) {
+         printf("init_finalize(exit): ret=%d sd=%p tracked_state=%p\n",
+                retval, $sd, @imx585_state);
++    }
+ }
+ 
+ kprobe:v4l2_subdev_get_locked_active_state
+ {
+     @entry_locked_state[tid] = arg0;
+-    if (@imx585_sd && arg0 == @imx585_sd)
++    if (@imx585_sd && arg0 == @imx585_sd) {
+         printf("get_locked_active_state(entry): sd=%p\n", arg0);
++    }
+ }
+ 
+ kretprobe:v4l2_subdev_get_locked_active_state
+@@ -67,8 +61,9 @@ kretprobe:v4l2_subdev_get_locked_active_state
+     $sd = @entry_locked_state[tid];
+     delete(@entry_locked_state[tid]);
+ 
+-    if (@imx585_sd && $sd == @imx585_sd)
++    if (@imx585_sd && $sd == @imx585_sd) {
+         printf("get_locked_active_state(exit): ret=%p\n", retval);
++    }
+ }
+ 
+ kprobe:__v4l2_subdev_state_get_format
+@@ -90,11 +85,12 @@ kretprobe:__v4l2_subdev_state_get_format
+     $state = @entry_get_format[tid];
+     delete(@entry_get_format[tid]);
+ 
+-    if ($state == 0)
++    if ($state == 0) {
+         printf("__v4l2_subdev_state_get_format(exit): state=NULL fmt=%p\n", retval);
+-    else if ($state == @imx585_state)
++    } else if ($state == @imx585_state) {
+         printf("__v4l2_subdev_state_get_format(exit): state=%p fmt=%p\n",
+                $state, retval);
++    }
+ }
+ 
+ kprobe:tegra_channel_init_subdevices
+-- 
+2.47.3
+

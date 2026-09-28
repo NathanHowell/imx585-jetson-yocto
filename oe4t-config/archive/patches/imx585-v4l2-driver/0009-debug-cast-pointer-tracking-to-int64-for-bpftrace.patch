@@ -1,0 +1,45 @@
+From 1b361bf293cc6a6f0f725d5d28541eb84b47b268 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:07:17 -0700
+Subject: [PATCH 09/25] debug: cast pointer tracking to int64 for bpftrace
+
+---
+ debug/trace-imx585-active-state.bt | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index 59cf4bb..47fa5b7 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -12,8 +12,8 @@ BEGIN
+ 
+ kprobe:imx585_init_state
+ {
+-    @imx585_sd = arg0;
+-    @imx585_state = arg1;
++    @imx585_sd = (int64)arg0;
++    @imx585_state = (int64)arg1;
+     printf("imx585_init_state: sd=%p state=%p\n", arg0, arg1);
+ }
+ 
+@@ -74,7 +74,7 @@ kprobe:__v4l2_subdev_state_get_format
+         printf("__v4l2_subdev_state_get_format(state=NULL pad=%lu stream=%lu)\n",
+                arg1, arg2);
+         printf("  caller stack:\n%s\n", kstack());
+-    } else if (arg0 == @imx585_state) {
++    } else if (@imx585_state && arg0 == @imx585_state) {
+         printf("__v4l2_subdev_state_get_format(entry): state=%p pad=%lu stream=%lu\n",
+                arg0, arg1, arg2);
+     }
+@@ -87,7 +87,7 @@ kretprobe:__v4l2_subdev_state_get_format
+ 
+     if ($state == 0) {
+         printf("__v4l2_subdev_state_get_format(exit): state=NULL fmt=%p\n", retval);
+-    } else if ($state == @imx585_state) {
++    } else if (@imx585_state && $state == @imx585_state) {
+         printf("__v4l2_subdev_state_get_format(exit): state=%p fmt=%p\n",
+                $state, retval);
+     }
+-- 
+2.47.3
+

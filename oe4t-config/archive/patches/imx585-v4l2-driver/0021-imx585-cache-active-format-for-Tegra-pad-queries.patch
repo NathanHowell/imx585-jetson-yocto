@@ -1,0 +1,145 @@
+From 8d09ef823f0b2d609aa37dad2175ae12e6576788 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Tue, 7 Oct 2025 14:55:40 -0700
+Subject: [PATCH 21/25] imx585: cache active format for Tegra pad queries
+
+---
+ imx585.c | 73 ++++++++++++++++++++++++++++++++++++--------------------
+ 1 file changed, 47 insertions(+), 26 deletions(-)
+
+diff --git a/imx585.c b/imx585.c
+index e6fb473..dcbd220 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -536,6 +536,7 @@ struct imx585 {
+ 	struct media_pad pad;
+ 	struct device *clientdev;
+ 	struct regmap *regmap;
++	struct v4l2_mbus_framefmt format;
+ 
+ 	struct clk *xclk;
+ 	u32 xclk_freq;
+@@ -644,6 +645,31 @@ static inline void get_mode_table(struct imx585 *imx585, unsigned int code,
+ 	}
+ }
+ 
++static void imx585_init_mbus_format(struct imx585 *imx585,
++			       struct v4l2_mbus_framefmt *fmt)
++{
++	const struct imx585_mode *mode_list, *mode;
++	unsigned int num_modes;
++
++	if (!fmt)
++		return;
++
++	get_mode_table(imx585, imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
++			      : MEDIA_BUS_FMT_SRGGB12_1X12,
++		      &mode_list, &num_modes);
++	mode = mode_list ? &mode_list[0] : NULL;
++
++	fmt->code = imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
++			      : MEDIA_BUS_FMT_SRGGB12_1X12;
++	fmt->width = mode ? mode->width : supported_modes[0].width;
++	fmt->height = mode ? mode->height : supported_modes[0].height;
++	fmt->field = V4L2_FIELD_NONE;
++	fmt->colorspace = V4L2_COLORSPACE_RAW;
++	fmt->ycbcr_enc = V4L2_YCBCR_ENC_601;
++	fmt->quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	fmt->xfer_func = V4L2_XFER_FUNC_NONE;
++}
++
+ static u32 imx585_get_format_code(struct imx585 *imx585, u32 code)
+ {
+ 	unsigned int i;
+@@ -1317,45 +1343,36 @@ static int imx585_get_pad_format(struct v4l2_subdev *sd,
+ 			 struct v4l2_subdev_format *fmt)
+ {
+ 	struct imx585 *imx585 = to_imx585(sd);
+-	const struct imx585_mode *mode_list, *mode;
+-	unsigned int num_modes;
+-	struct v4l2_subdev_state *state = sd_state;
+-	struct v4l2_subdev_pad_config *pad_cfg = NULL;
++	struct v4l2_mbus_framefmt *stored_fmt;
+ 
+ 	if (fmt->pad)
+ 		return -EINVAL;
+ 
+-	if (!state)
+-		state = v4l2_subdev_get_unlocked_active_state(sd);
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		if (!sd_state)
++			return -EINVAL;
++
++		stored_fmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
++		if (!stored_fmt)
++			return -EINVAL;
+ 
+-	if (state && state->pads)
+-		pad_cfg = &state->pads[fmt->pad];
++		if (!stored_fmt->code)
++			imx585_init_mbus_format(imx585, stored_fmt);
+ 
+-	if (pad_cfg) {
+-		fmt->format = pad_cfg->format;
++		fmt->format = *stored_fmt;
+ 		dev_dbg(imx585->clientdev,
+-			"get_pad_format: returning cached format code=0x%x %ux%u\n",
++			"get_pad_format: try format code=0x%x %ux%u\n",
+ 			fmt->format.code, fmt->format.width, fmt->format.height);
+ 		return 0;
+ 	}
+ 
+-	get_mode_table(imx585, imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
+-			      : MEDIA_BUS_FMT_SRGGB12_1X12,
+-		      &mode_list, &num_modes);
+-	mode = mode_list ? &mode_list[0] : NULL;
++	if (!imx585->format.code)
++		imx585_init_mbus_format(imx585, &imx585->format);
+ 
+-	fmt->format.code = imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
+-				      : MEDIA_BUS_FMT_SRGGB12_1X12;
+-	fmt->format.width = mode ? mode->width : supported_modes[0].width;
+-	fmt->format.height = mode ? mode->height : supported_modes[0].height;
+-	fmt->format.field = V4L2_FIELD_NONE;
+-	fmt->format.colorspace = V4L2_COLORSPACE_RAW;
+-	fmt->format.ycbcr_enc = V4L2_YCBCR_ENC_601;
+-	fmt->format.quantization = V4L2_QUANTIZATION_FULL_RANGE;
+-	fmt->format.xfer_func = V4L2_XFER_FUNC_NONE;
++	fmt->format = imx585->format;
+ 
+ 	dev_dbg(imx585->clientdev,
+-		"get_pad_format: defaulting format code=0x%x %ux%u\n",
++		"get_pad_format: active format code=0x%x %ux%u\n",
+ 		fmt->format.code, fmt->format.width, fmt->format.height);
+ 	return 0;
+ }
+@@ -1395,7 +1412,7 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
+ 	fmt->format.xfer_func    = V4L2_XFER_FUNC_NONE;
+ 
+ 	if (sd_state)
+-		format = v4l2_subdev_state_get_format(sd_state, 0);
++		format = v4l2_subdev_state_get_format(sd_state, fmt->pad);
+ 	else
+ 		format = NULL;
+ 	if (!format) {
+@@ -1409,6 +1426,9 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
+ 		imx585_set_framing_limits(imx585, mode);
+ 
+ 	*format = fmt->format;
++	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
++		imx585->format = fmt->format;
++
+ 	dev_dbg(imx585->clientdev,
+ 		"set_pad_format: format code=0x%x %ux%u stored in %p\n",
+ 		format->code, format->width, format->height, format);
+@@ -1865,6 +1885,7 @@ static int imx585_probe(struct i2c_client *client)
+ 		return -ENOMEM;
+ 
+ 	mutex_init(&imx585->lock);
++	imx585_init_mbus_format(imx585, &imx585->format);
+ 
+ 	v4l2_i2c_subdev_init(&imx585->sd, client, &imx585_subdev_ops);
+ 	imx585->sd.state_lock = &imx585->lock;
+-- 
+2.47.3
+

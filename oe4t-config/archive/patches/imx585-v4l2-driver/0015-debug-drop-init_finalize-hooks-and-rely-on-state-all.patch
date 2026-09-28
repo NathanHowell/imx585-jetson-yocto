@@ -1,0 +1,88 @@
+From fbe9a05fce07b9cc44f7454ff2453307a9dcdcf0 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:30:40 -0700
+Subject: [PATCH 15/25] debug: drop init_finalize hooks and rely on state alloc
+ tracing
+
+---
+ debug/trace-imx585-active-state.bt | 37 ++----------------------------
+ 1 file changed, 2 insertions(+), 35 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index 89ae242..ac19e47 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -1,17 +1,12 @@
+ #!/usr/bin/env bpftrace
+ /*
+  * trace-imx585-active-state.bt
+- *
+- * Focused trace for the Tegra VI crash while binding the imx585 sensor.
+- * Relies only on globally visible helpers so it works even when the
+- * imx585 module isn't compiled with tracing symbols.
+  */
+ 
+ BEGIN
+ {
+     printf("Tracing imx585 focussed paths… ctrl-C to stop\n");
+     @tracked_state = 0;
+-    @init_state = 0;
+ }
+ 
+ /* Track subdev state allocations to map subdev -> state pointer. */
+@@ -33,29 +28,6 @@ kretprobe:videodev:__v4l2_subdev_state_alloc
+     }
+ }
+ 
+-/* Remember which subdev completed init_finalize so we can seed @init_state. */
+-kprobe:videodev:v4l2_subdev_init_finalize
+-{
+-    @finalize_sd[tid] = arg0;
+-}
+-
+-kretprobe:videodev:v4l2_subdev_init_finalize
+-{
+-    $sd = @finalize_sd[tid];
+-    delete(@finalize_sd[tid]);
+-
+-    if ($sd) {
+-        $state = @state_by_sd[(int64)$sd];
+-        if ($state) {
+-            @init_state = $state;
+-            printf("v4l2_subdev_init_finalize exit: sd=%p active_state=%p\n",
+-                   $sd, (void *)$state);
+-        } else {
+-            printf("v4l2_subdev_init_finalize exit: sd=%p active_state=None\n", $sd);
+-        }
+-    }
+-}
+-
+ /* Core helper where the crash happens. */
+ kprobe:__v4l2_subdev_state_get_format
+ {
+@@ -68,11 +40,6 @@ kprobe:__v4l2_subdev_state_get_format
+         return;
+     }
+ 
+-    if (!@tracked_state && @init_state) {
+-        @tracked_state = @init_state;
+-        printf("tracking subdev state via init finalize=%p\n", (void *)@tracked_state);
+-    }
+-
+     if (!@tracked_state) {
+         @tracked_state = (int64)arg0;
+         printf("tracking subdev state=%p pad=%lu stream=%lu\n", arg0, arg1, arg2);
+@@ -110,8 +77,8 @@ kretprobe:tegra_channel_init_subdevices
+ 
+ kprobe:tegra_camera:tegra_channel_fmts_bitmap_init
+ {
+-    printf("tegra_channel_fmts_bitmap_init entry: chan=%p tracked_state=%p init_state=%p\n",
+-           arg0, (void *)@tracked_state, (void *)@init_state);
++    printf("tegra_channel_fmts_bitmap_init entry: chan=%p tracked_state=%p\n",
++           arg0, (void *)@tracked_state);
+     printf("  caller stack:\n%s\n", kstack());
+ }
+ 
+-- 
+2.47.3
+

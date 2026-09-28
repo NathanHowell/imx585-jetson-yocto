@@ -1,0 +1,95 @@
+From ba74e64be47b2680f51c40f705d9c36d267eeab0 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:26:40 -0700
+Subject: [PATCH 14/25] debug: log subdev state alloc and tegra bitmap entry
+ stack
+
+---
+ debug/trace-imx585-active-state.bt | 57 +++++++++++++++++++++++++-----
+ 1 file changed, 48 insertions(+), 9 deletions(-)
+
+diff --git a/debug/trace-imx585-active-state.bt b/debug/trace-imx585-active-state.bt
+index a65edc2..89ae242 100755
+--- a/debug/trace-imx585-active-state.bt
++++ b/debug/trace-imx585-active-state.bt
+@@ -1,6 +1,10 @@
+ #!/usr/bin/env bpftrace
+ /*
+  * trace-imx585-active-state.bt
++ *
++ * Focused trace for the Tegra VI crash while binding the imx585 sensor.
++ * Relies only on globally visible helpers so it works even when the
++ * imx585 module isn't compiled with tracing symbols.
+  */
+ 
+ BEGIN
+@@ -10,6 +14,49 @@ BEGIN
+     @init_state = 0;
+ }
+ 
++/* Track subdev state allocations to map subdev -> state pointer. */
++kprobe:videodev:__v4l2_subdev_state_alloc
++{
++    @state_alloc_sd[tid] = arg0;
++}
++
++kretprobe:videodev:__v4l2_subdev_state_alloc
++{
++    $sd = @state_alloc_sd[tid];
++    delete(@state_alloc_sd[tid]);
++
++    if ($sd && retval) {
++        @state_by_sd[(int64)$sd] = (int64)retval;
++        printf("__v4l2_subdev_state_alloc: sd=%p state=%p\n", $sd, retval);
++    } else {
++        printf("__v4l2_subdev_state_alloc: sd=%p state=%p\n", $sd, retval);
++    }
++}
++
++/* Remember which subdev completed init_finalize so we can seed @init_state. */
++kprobe:videodev:v4l2_subdev_init_finalize
++{
++    @finalize_sd[tid] = arg0;
++}
++
++kretprobe:videodev:v4l2_subdev_init_finalize
++{
++    $sd = @finalize_sd[tid];
++    delete(@finalize_sd[tid]);
++
++    if ($sd) {
++        $state = @state_by_sd[(int64)$sd];
++        if ($state) {
++            @init_state = $state;
++            printf("v4l2_subdev_init_finalize exit: sd=%p active_state=%p\n",
++                   $sd, (void *)$state);
++        } else {
++            printf("v4l2_subdev_init_finalize exit: sd=%p active_state=None\n", $sd);
++        }
++    }
++}
++
++/* Core helper where the crash happens. */
+ kprobe:__v4l2_subdev_state_get_format
+ {
+     @entry_get_format[tid] = arg0;
+@@ -50,15 +97,7 @@ kretprobe:__v4l2_subdev_state_get_format
+     }
+ }
+ 
+-kretprobe:videodev:v4l2_subdev_init_finalize
+-{
+-    $sd = (struct v4l2_subdev *)arg0;
+-    $state = $sd->active_state;
+-    @init_state = (int64)$state;
+-    printf("v4l2_subdev_init_finalize exit: sd=%p active_state=%p flags=0x%x\n",
+-           $sd, $state, $sd->flags);
+-}
+-
++/* Tegra VI glue to show when it pokes the sensor. */
+ kprobe:tegra_channel_init_subdevices
+ {
+     printf("tegra_channel_init_subdevices(chan=%p)\n", arg0);
+-- 
+2.47.3
+

@@ -87,3 +87,11 @@ packaging reference, not as a working driver.
 The full-DT variants (`…-imx585-cef168*.dts`) are the more useful artifact going
 forward, since they contain hand-written `tegra-camera-platform` and `cam_i2cmux`
 nodes for both the sensor and the focus controller.
+
+## archive/ — added 2026-09-28
+
+The snapshot above captured *configuration*. `archive/` captures the **history
+and working state** that existed only inside `/home/nathan/tegra-demo-distro`,
+so that tree can now be deleted. Most important: 25 unpushed commits of
+tegracam-conversion work on the IMX585 driver, which were on a local `devtool`
+branch and on no remote. See `archive/README.md`.

@@ -1,0 +1,41 @@
+From 48cca092ff3775bfb9c96faf1e1c112894a1fe8a Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 15:36:05 -0700
+Subject: [PATCH 3/7] docs: note devtool workflow for driver/overlay iteration
+
+---
+ AGENTS.md | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 2a851f8..70bf992 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -4,7 +4,7 @@
+ - Yocto build directory lives in `build/`; use `source setup-env build` before bitbake commands.
+ - Custom layer is `layers/meta-tegrademo`; overlay and driver recipes live under `recipes-bsp` and `recipes-kernel` there.
+ - Dynamic-debug kernel fragment is in `layers/meta-tegrademo/recipes-kernel/linux/linux-yocto/imx585.cfg`.
+-- Workspace created by `devtool modify imx585-v4l2-driver` sits in `build/workspace/sources/imx585-v4l2-driver` and is now the live source for the sensor module.
++- Workspaces created via `devtool modify` live under `build/workspace/sources/` (currently `imx585-v4l2-driver` and `imx585-overlay` are active).
+ 
+ ## Boot Media & Overlay Handling
+ - `imx585-overlay` installs two copies of `imx585-overlay.dtbo`: one in `/boot` (rootfs) for on-device use and one at the image root so `tegraflash` can bundle it.
+@@ -25,10 +25,11 @@
+ - Useful commands: `media-ctl -p`, `v4l2-ctl --list-devices`, `dmesg | grep -i imx585`, `lsmod | grep imx585`, `fdtget` (install via package if missing), `strace -eopenat,ioctl v4l2-ctl --list-devices` for ENAMETOOLONG errors.
+ - Expect benign “Fixed dependency cycle” messages from Tegra ACONNECT; focus on sensor logs and VI errors.
+ 
+-## Devtool Workflow
+-- While iterating on the driver, modify files under `build/workspace/sources/imx585-v4l2-driver` without maintaining patches.
+-- Rebuild quickly with `bitbake -c compile imx585-v4l2-driver -f` or add other recipes as needed.
+-- When changes are ready, `devtool finish imx585-v4l2-driver layers/meta-tegrademo` to turn the workspace diffs into layer patches; `devtool reset imx585-v4l2-driver` cleans up afterward.
++## Devtool Workflow (default for drivers & overlays)
++- Use `devtool modify <recipe>` as the first step for any sensor driver or overlay work (already active for `imx585-v4l2-driver` and `imx585-overlay`). This keeps patches out of the layer until we deliberately finish.
++- Edit live sources under `build/workspace/sources/<recipe>` and rebuild quickly with `bitbake -c compile <recipe> -f` (or include additional targets as needed).
++- Once testing is complete, run `devtool finish <recipe> layers/meta-tegrademo` to export the diff as proper patches, then `devtool reset <recipe>` after the changes are merged. Nathan owns the upstream git repos and will push final commits once the Yocto patches are generated.
++- Follow the same pattern for upcoming work (e.g., CEF168 driver + overlay) to avoid churn from repeatedly refreshing patches during iteration.
+ 
+ ## Pending Debug Tasks
+ - Add targeted `dev_dbg()` instrumentation (requires rebuilding module) to trace format negotiation before Tegra VI probes.
+-- 
+2.47.3
+

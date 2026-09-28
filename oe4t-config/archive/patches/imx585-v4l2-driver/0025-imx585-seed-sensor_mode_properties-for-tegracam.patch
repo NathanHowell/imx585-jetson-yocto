@@ -1,0 +1,142 @@
+From 13947db8c5bbd5d18694f5a2de93a625e957c928 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Tue, 7 Oct 2025 21:22:25 -0700
+Subject: [PATCH 25/25] imx585: seed sensor_mode_properties for tegracam
+
+---
+ imx585.c | 91 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
+
+diff --git a/imx585.c b/imx585.c
+index 6903bef..20b3ff8 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -15,6 +15,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/slab.h>
++#include <linux/math64.h>
+ 
+ #include <media/camera_common.h>
+ #include <media/tegra_v4l2_camera.h>
+@@ -22,6 +23,7 @@
+ #include <media/v4l2-cci.h>
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-ctrls.h>
++#include <linux/videodev2.h>
+ 
+ /* --------------------------------------------------------------------------
+  * Sensor register definitions
+@@ -72,6 +74,7 @@
+ #define IMX585_ARRAY_TOP                8U
+ #define IMX585_ARRAY_WIDTH              3840U
+ #define IMX585_ARRAY_HEIGHT             2160U
++#define IMX585_MCLK_FREQ                24000000U
+ 
+ enum imx585_link_freq {
+ 	IMX585_LINK_FREQ_297MHZ,
+@@ -576,6 +579,92 @@ static void imx585_update_timing(struct imx585 *priv,
+ 	priv->vmax = mode->default_vmax;
+ }
+ 
++static void imx585_populate_sensor_mode_props(struct imx585 *priv)
++{
++	struct camera_common_data *s_data = priv->s_data;
++	struct sensor_properties *props = &s_data->sensor_props;
++	const u32 bpp = 10;
++	u32 num_modes;
++	u32 i;
++
++	if (!props->sensor_modes)
++		return;
++
++	num_modes = min(props->num_modes, (u32)ARRAY_SIZE(imx585_modes));
++
++	for (i = 0; i < num_modes; i++) {
++		struct sensor_mode_properties *dst = &props->sensor_modes[i];
++		const struct imx585_mode *src = &imx585_modes[i];
++		u32 hmax = imx585_get_min_hmax(priv, src);
++		u64 link_freq = imx585_link_freq_table[priv->link_freq_idx];
++		u64 pixel_clock = div_u64(link_freq * 2ULL * priv->lane_count, bpp);
++		u64 frame_length = src->default_vmax;
++		u64 frame_time_us;
++		u64 min_exp_us;
++		u64 max_exp_us;
++		u64 default_exp_us;
++		u64 max_fps_q6;
++
++	if (!pixel_clock)
++		pixel_clock = IMX585_PIXEL_RATE;
++
++	frame_time_us = div_u64((u64)hmax * frame_length * 1000000ULL,
++				pixel_clock ? pixel_clock : 1);
++	if (!frame_time_us)
++		frame_time_us = 16666; /* ~60 fps */
++
++	min_exp_us = div_u64((u64)IMX585_SHR_MIN * hmax * 1000000ULL,
++			pixel_clock ? pixel_clock : 1);
++	if (!min_exp_us)
++		min_exp_us = 10;
++
++	max_exp_us = max(frame_time_us - min_exp_us, min_exp_us + 1);
++	default_exp_us = clamp_t(u64, frame_time_us / 2,
++					min_exp_us, max_exp_us);
++
++	max_fps_q6 = div_u64(pixel_clock * 1000000ULL,
++				(u64)hmax * frame_length);
++	if (!max_fps_q6)
++		max_fps_q6 = 60000000ULL;
++
++	dst->signal_properties.num_lanes = priv->lane_count;
++	dst->signal_properties.mclk_freq = IMX585_MCLK_FREQ;
++	dst->signal_properties.pixel_clock.val = pixel_clock;
++	dst->signal_properties.cil_settletime = 0;
++	dst->signal_properties.discontinuous_clk = 0;
++	dst->signal_properties.dpcm_enable = 0;
++	dst->signal_properties.phy_mode = CSI_PHY_MODE_DPHY;
++
++	dst->image_properties.width = src->width;
++	dst->image_properties.height = src->height;
++	dst->image_properties.line_length = hmax;
++		dst->image_properties.pixel_format = V4L2_PIX_FMT_SRGGB10;
++	dst->image_properties.embedded_metadata_height = 2;
++
++	dst->control_properties.gain_factor = 16;
++	dst->control_properties.framerate_factor = 1000000;
++	dst->control_properties.exposure_factor = 1000000;
++	dst->control_properties.inherent_gain = 1;
++	dst->control_properties.min_gain_val = 16;
++	dst->control_properties.max_gain_val = 512;
++	dst->control_properties.step_gain_val = 1;
++	dst->control_properties.default_gain = 16;
++	dst->control_properties.min_hdr_ratio = 1;
++	dst->control_properties.max_hdr_ratio = 1;
++	dst->control_properties.min_framerate = 1000000;
++	dst->control_properties.step_framerate = 1;
++	dst->control_properties.max_framerate = min_t(u32, max_fps_q6, U32_MAX);
++	dst->control_properties.default_framerate =
++		min_t(u32, max_fps_q6, U32_MAX);
++	dst->control_properties.min_exp_time.val = min_exp_us;
++	dst->control_properties.max_exp_time.val = max_exp_us;
++	dst->control_properties.step_exp_time.val = 1;
++	dst->control_properties.default_exp_time.val = default_exp_us;
++	dst->control_properties.is_interlaced = 0;
++	dst->control_properties.interlace_type = 0;
++	}
++}
++
+ static int imx585_mode_init(struct imx585 *priv,
+ 			      const struct imx585_mode *mode)
+ {
+@@ -876,6 +965,8 @@ static int imx585_probe(struct i2c_client *client)
+ 		goto unregister;
+ 	}
+ 
++	imx585_populate_sensor_mode_props(priv);
++
+ 	err = imx585_init_inck_sel(priv);
+ 	if (err) {
+ 		dev_err(dev, "unsupported xclk frequency\n");
+-- 
+2.47.3
+

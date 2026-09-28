@@ -1,0 +1,80 @@
+From f331cbf87abaee5ad8631f6e7d1c3030ceb8c998 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Mon, 6 Oct 2025 17:47:04 -0700
+Subject: [PATCH 17/25] imx585: provide get_fmt fallback for empty pad configs
+
+---
+ imx585.c | 50 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/imx585.c b/imx585.c
+index 38a4e7f..5292ad1 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -1208,6 +1208,54 @@ static int imx585_enum_frame_size(struct v4l2_subdev *sd,
+ 	return 0;
+ }
+ 
++static int imx585_get_pad_format(struct v4l2_subdev *sd,
++			 struct v4l2_subdev_state *sd_state,
++			 struct v4l2_subdev_format *fmt)
++{
++	struct imx585 *imx585 = to_imx585(sd);
++	const struct imx585_mode *mode_list, *mode;
++	unsigned int num_modes;
++	struct v4l2_subdev_state *state = sd_state;
++	struct v4l2_subdev_pad_config *pad_cfg = NULL;
++
++	if (fmt->pad)
++		return -EINVAL;
++
++	if (!state)
++		state = v4l2_subdev_get_unlocked_active_state(sd);
++
++	if (state && state->pads)
++		pad_cfg = &state->pads[fmt->pad];
++
++	if (pad_cfg) {
++		fmt->format = pad_cfg->format;
++		dev_dbg(imx585->clientdev,
++			"get_pad_format: returning cached format code=0x%x %ux%u\n",
++			fmt->format.code, fmt->format.width, fmt->format.height);
++		return 0;
++	}
++
++	get_mode_table(imx585, imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
++			      : MEDIA_BUS_FMT_SRGGB12_1X12,
++		      &mode_list, &num_modes);
++	mode = mode_list ? &mode_list[0] : NULL;
++
++	fmt->format.code = imx585->mono ? MEDIA_BUS_FMT_Y12_1X12
++				      : MEDIA_BUS_FMT_SRGGB12_1X12;
++	fmt->format.width = mode ? mode->width : supported_modes[0].width;
++	fmt->format.height = mode ? mode->height : supported_modes[0].height;
++	fmt->format.field = V4L2_FIELD_NONE;
++	fmt->format.colorspace = V4L2_COLORSPACE_RAW;
++	fmt->format.ycbcr_enc = V4L2_YCBCR_ENC_601;
++	fmt->format.quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	fmt->format.xfer_func = V4L2_XFER_FUNC_NONE;
++
++	dev_dbg(imx585->clientdev,
++		"get_pad_format: defaulting format code=0x%x %ux%u\n",
++		fmt->format.code, fmt->format.width, fmt->format.height);
++	return 0;
++}
++
+ static int imx585_set_pad_format(struct v4l2_subdev *sd,
+ 			 struct v4l2_subdev_state *sd_state,
+ 			 struct v4l2_subdev_format *fmt)
+@@ -1595,7 +1643,7 @@ static const struct v4l2_subdev_video_ops imx585_video_ops = {
+ 
+ static const struct v4l2_subdev_pad_ops imx585_pad_ops = {
+ 	.enum_mbus_code = imx585_enum_mbus_code,
+-	.get_fmt        = v4l2_subdev_get_fmt,
++	.get_fmt        = imx585_get_pad_format,
+ 	.set_fmt        = imx585_set_pad_format,
+ 	.get_selection  = imx585_get_selection,
+ 	.enum_frame_size = imx585_enum_frame_size,
+-- 
+2.47.3
+

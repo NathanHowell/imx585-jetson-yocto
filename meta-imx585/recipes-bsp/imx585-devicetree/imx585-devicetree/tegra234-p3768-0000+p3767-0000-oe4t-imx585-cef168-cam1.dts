@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Device tree describing an IMX585 image sensor and CEF168 lens controller on CAM1.
+
+/dts-v1/;
+
+#include <dt-bindings/tegra234-p3767-0000-common.h>
+#include <dt-bindings/clock/tegra234-clock.h>
+#include "tegra234-p3768-0000+p3767-0000-oe4t.dts"
+
+#define CAM1_PWDN       TEGRA234_MAIN_GPIO(AC, 0)
+#define CAM_I2C_MUX     TEGRA234_AON_GPIO(CC, 3)
+
+/ {
+    imx585_cam1_vdig_reg: regulator-imx585-cam1-vdig {
+        compatible = "regulator-fixed";
+        regulator-name = "IMX585_CAM1_VDIG";
+        regulator-min-microvolt = <1100000>;
+        regulator-max-microvolt = <1100000>;
+        regulator-always-on;
+        vin-supply = <&vdd_1v8_ao>;
+    };
+
+    tcp: tegra-camera-platform {
+        modules {
+            module1 {
+                badge = "tegrademo_cam1_IMX585";
+                position = "rear";
+                orientation = "0";
+
+                drivernode0 {
+                    pcl_id = "v4l2_sensor";
+                    sysfs-device-tree = "/sys/firmware/devicetree/base/bus@0/cam_i2cmux/i2c@1/imx585_b@1a";
+                };
+
+                drivernode1 {
+                    pcl_id = "v4l2_lens";
+                    sysfs-device-tree = "/sys/firmware/devicetree/base/bus@0/cam_i2cmux/i2c@1/cef168@d";
+                };
+            };
+        };
+    };
+
+    cam_i2cmux: cam_i2cmux {
+        i2c@1 {
+            status = "disabled";
+            reg = <1>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            imx585_b@1a {
+                status = "disabled";
+                compatible = "sony,imx585";
+                reg = <0x1a>;
+                clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>,
+                         <&bpmp TEGRA234_CLK_PLLP_OUT0>;
+                clock-names = "extperiph1", "pllp_grtba";
+                mclk = "extperiph1";
+                clock-frequency = <24000000>;
+                assigned-clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>;
+                assigned-clock-parents = <&bpmp TEGRA234_CLK_PLLP_OUT0>;
+                assigned-clock-rates = <24000000>;
+                reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_HIGH>;
+                vana-supply = <&vdd_3v3_ao>;
+                vdig-supply = <&imx585_cam1_vdig_reg>;
+                vddl-supply = <&vdd_1v8_ao>;
+                link-frequencies = /bits/ 64 <720000000>;
+                orientation = <0>;
+                devnode = "video1";
+                use-sensor-mode-id;
+
+                port {
+                    imx585_cam1_out0: endpoint {
+                        port-index = <2>;
+                        bus-width = <4>;
+                        clock-lanes = <0>;
+                        data-lanes = <1 2 3 4>;
+                        link-frequencies = /bits/ 64 <720000000>;
+                        lane-polarity = <0 1 0 0>;
+                        remote-endpoint = <&imx585_cam1_csi_in0>;
+                    };
+                };
+            };
+
+            cef168@d {
+                status = "disabled";
+                compatible = "pinefeat,cef168";
+                reg = <0x0d>;
+                vcc-supply = <&vdd_3v3_ao>;
+            };
+        };
+    };
+};
+
+&nvcsi {
+    channel@1 {
+        status = "disabled";
+        reg = <1>;
+
+        ports {
+            port@0 {
+                reg = <0>;
+                imx585_cam1_csi_in0: endpoint@0 {
+                    port-index = <2>;
+                    bus-width = <4>;
+                    clock-lanes = <0>;
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <720000000>;
+                    lane-polarity = <0 1 0 0>;
+                    remote-endpoint = <&imx585_cam1_out0>;
+                };
+            };
+
+            port@1 {
+                reg = <1>;
+                imx585_cam1_csi_out0: endpoint@1 {
+                    remote-endpoint = <&imx585_cam1_vi_in0>;
+                };
+            };
+        };
+    };
+};
+
+&capture_vi {
+    ports {
+        port@1 {
+            status = "disabled";
+            reg = <1>;
+            imx585_cam1_vi_in0: endpoint {
+                port-index = <2>;
+                bus-width = <4>;
+                remote-endpoint = <&imx585_cam1_csi_out0>;
+            };
+        };
+    };
+};
+
+&cam_i2cmux {
+    i2c@1 {
+        status = "disabled";
+    };
+};

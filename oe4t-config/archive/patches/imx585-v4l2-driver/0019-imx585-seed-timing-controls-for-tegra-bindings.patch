@@ -1,0 +1,180 @@
+From 4b0eb3f9c6005cce645e846731a8644f1131d644 Mon Sep 17 00:00:00 2001
+From: Nathan Howell <nathan.d.howell@gmail.com>
+Date: Tue, 7 Oct 2025 08:10:20 -0700
+Subject: [PATCH 19/25] imx585: seed timing controls for tegra bindings
+
+---
+ imx585.c | 109 +++++++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 89 insertions(+), 20 deletions(-)
+
+diff --git a/imx585.c b/imx585.c
+index 0dd9fbe..ebee8e5 100644
+--- a/imx585.c
++++ b/imx585.c
+@@ -13,6 +13,7 @@
+ #include <linux/of_device.h>
+ #include <linux/of_graph.h>
+ #include <linux/mutex.h>
++#include <linux/minmax.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/slab.h>
+@@ -745,6 +746,66 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
+ 		 imx585->vmax, imx585->hmax, pixel_rate);
+ }
+ 
++static u64 imx585_calc_pixel_rate(const struct imx585_mode *mode, u32 hmax)
++{
++	u64 pixel_rate;
++
++	if (!hmax)
++		return 0;
++
++	pixel_rate = (u64)mode->width * IMX585_PIXEL_RATE;
++	do_div(pixel_rate, hmax);
++
++	return pixel_rate;
++}
++
++static u32 imx585_calc_hblank_from_hmax(const struct imx585_mode *mode, u32 hmax)
++{
++	u64 line_pixels;
++
++	if (!mode->width || !mode->min_hmax)
++		return 0;
++
++	line_pixels = (u64)hmax * mode->width;
++	do_div(line_pixels, mode->min_hmax);
++
++	if (line_pixels <= mode->width)
++		return 0;
++
++	return line_pixels - mode->width;
++}
++
++static void imx585_update_hmax_from_hblank(struct imx585 *imx585,
++					   const struct imx585_mode *mode,
++					   u32 hblank)
++{
++	u64 scaled = (u64)mode->min_hmax * (mode->width + hblank);
++	u32 hmax;
++
++	if (!mode->width)
++		hmax = mode->min_hmax;
++	else
++		hmax = div_u64(scaled, mode->width);
++
++	imx585->hmax = clamp_t(u32, hmax, 1, IMX585_HMAX_MAX);
++}
++
++static void imx585_update_vblank_limits(struct imx585 *imx585,
++					 const struct imx585_mode *mode,
++					 u32 vblank)
++{
++	const u32 min_shr = imx585->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
++	u32 vmax = (mode->height + vblank) & ~1U;
++	u32 max_exposure = max_t(u32, IMX585_EXPOSURE_MIN, vmax - min_shr);
++	u32 cur_exposure = clamp_t(u32, imx585->exposure->cur.val,
++			       IMX585_EXPOSURE_MIN, max_exposure);
++
++	imx585->vmax = vmax;
++
++	__v4l2_ctrl_modify_range(imx585->exposure, IMX585_EXPOSURE_MIN,
++				 max_exposure, 1, cur_exposure);
++}
++
+ /* --------------------------------------------------------------------------
+  * Controls
+  * --------------------------------------------------------------------------
+@@ -767,6 +828,23 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
+ 				      fmt->width, fmt->height);
+ 
+ 	switch (ctrl->id) {
++	case V4L2_CID_PIXEL_RATE:
++		/* Cached during framing setup; nothing else to do. */
++		return 0;
++	case V4L2_CID_LINK_FREQ:
++		return 0;
++	case V4L2_CID_VBLANK: {
++		u32 vblank = clamp_t(u32, ctrl->val, ctrl->minimum, ctrl->maximum);
++
++		imx585_update_vblank_limits(imx585, mode, vblank);
++		return 0;
++	}
++	case V4L2_CID_HBLANK: {
++		u32 hblank = clamp_t(u32, ctrl->val, ctrl->minimum, ctrl->maximum);
++
++		imx585_update_hmax_from_hblank(imx585, mode, hblank);
++		return 0;
++	}
+ 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
+ 		if (imx585->clear_hdr != ctrl->val) {
+ 			u32 code;
+@@ -822,6 +900,10 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
+ 			dev_err_ratelimited(imx585->clientdev, "SHR write failed (%d)\n", ret);
+ 		break;
+ 	}
++	case V4L2_CID_PIXEL_RATE:
++	case V4L2_CID_LINK_FREQ:
++		/* Read-only controls: core already updated cached value. */
++		break;
+ 	case V4L2_CID_IMX585_HCG_GAIN:
+ 		if (!imx585->clear_hdr) {
+ 			ret = cci_write(imx585->regmap, IMX585_REG_FDG_SEL0, ctrl->val, NULL);
+@@ -840,18 +922,11 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
+ 			dev_err_ratelimited(imx585->clientdev, "Gain write failed (%d)\n", ret);
+ 		break;
+ 	case V4L2_CID_VBLANK: {
+-		u32 current_exposure = imx585->exposure->cur.val;
+-		const u32 min_shr = imx585->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
++		u32 vblank = ctrl->val;
+ 
+-		imx585->vmax = (mode->height + ctrl->val) & ~1U;
++		imx585_update_vblank_limits(imx585, mode, vblank);
+ 
+-		current_exposure = clamp_t(u32, current_exposure,
+-					   IMX585_EXPOSURE_MIN, imx585->vmax - min_shr);
+-		__v4l2_ctrl_modify_range(imx585->exposure,
+-					 IMX585_EXPOSURE_MIN, imx585->vmax - min_shr, 1,
+-					 current_exposure);
+-
+-		dev_info(imx585->clientdev, "VBLANK=%u -> VMAX=%u\n", ctrl->val, imx585->vmax);
++		dev_info(imx585->clientdev, "VBLANK=%u -> VMAX=%u\n", vblank, imx585->vmax);
+ 
+ 		ret = cci_write(imx585->regmap, IMX585_REG_VMAX, imx585->vmax, NULL);
+ 		if (ret)
+@@ -859,19 +934,13 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
+ 		break;
+ 	}
+ 	case V4L2_CID_HBLANK: {
+-		u32 width   = mode->width;
+-		u32 hblank  = (u32)ctrl->val;
+-		u64 num;
+-		u32 hmax_new;
+-
+-		num = (u64)mode->min_hmax * (width + hblank);
+-		hmax_new = div_u64(num, width);
++		u32 hblank = (u32)ctrl->val;
+ 
+-		imx585->hmax = hmax_new;
++		imx585_update_hmax_from_hblank(imx585, mode, hblank);
+ 
+ 		dev_info(imx585->clientdev,
+ 			 "HBLANK=%u -> HMAX=%u (min_hmax=%u, width=%u)\n",
+-			 hblank, imx585->hmax, mode->min_hmax, width);
++			 hblank, imx585->hmax, mode->min_hmax, mode->width);
+ 
+ 		ret = cci_write(imx585->regmap, IMX585_REG_HMAX, imx585->hmax, NULL);
+ 		if (ret)
+@@ -1766,7 +1835,7 @@ static int imx585_probe(struct i2c_client *client)
+ 	imx585->sd.state_lock = &imx585->lock;
+ 	imx585->clientdev = dev;
+ 	strscpy(imx585->sd.name, "imx585", sizeof(imx585->sd.name));
+-	strscpy(imx585->sd.entity.name, "imx585", sizeof(imx585->sd.entity.name));
++	imx585->sd.entity.name = imx585->sd.name;
+ 	dev_dbg(dev,
+ 		"probe: subdev=%p state_lock=%p ctrl_lock(pending)=%p\n",
+ 		&imx585->sd, imx585->sd.state_lock,
+-- 
+2.47.3
+
