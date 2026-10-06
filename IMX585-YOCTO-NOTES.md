@@ -405,6 +405,39 @@ NVIDIA-framework device tree, crashing on a NULL deref in
 `__v4l2_subdev_state_get_format()` because Tegra VI calls `get_fmt` before
 `sd->active_state` exists. See §3.2.
 
+#### 8.2.1 What Argus is, and why it is not the raw path
+
+Argus (libargus) is NVIDIA's proprietary camera API, and the table above is the
+only place it constrains this project. It is two pieces: `libnvargus.so`, which
+clients link against, and **`nvargus-daemon`**, a privileged process that owns the
+sensor and the Tegra ISP. Clients do not touch the hardware — they talk to the
+daemon over a socket, which is why `drivers.csv` ships
+`libnvargus_socketclient.so` and `libnvargus_socketserver.so` as a pair.
+
+What the daemon does is run the ISP: debayer, black level, lens shading, AE, AWB,
+denoise, tone mapping, and hand back **NV12/YUV or RGBA** through EGLStreams.
+`nvarguscamerasrc` is just a gstreamer wrapper around that.
+
+Two consequences:
+
+- **Argus cannot give you linear raw.** It is the ISP pipeline; Bayer goes in and
+  processed YUV comes out. The raw requirement in §5 is served by plain V4L2
+  capture from `/dev/video0` — `v4l2-ctl --stream-mmap`, or `nvv4l2camerasrc`,
+  or your own `VIDIOC_*` code — which bypasses Argus entirely. Argus is also no
+  help for the CEF168: its AF algorithm drives NVIDIA-style VCM focusers, not an
+  external EF lens controller, so the contrast-detect loop in §6 is yours either
+  way.
+- **It reads the device tree, not the driver.** Argus takes sensor modes,
+  physical geometry and calibration from the `tegra-camera-platform` and `modeX`
+  properties, which is the half of Option 1 that Option 2 does not provide. That
+  is the real reason the framework choice decides "whether Argus works at all".
+
+So Option 1 is not recommended *because of* Argus. It is recommended because
+tegracam is what Tegra VI expects. A tegracam sensor still registers an ordinary
+V4L2 video node, and raw Bayer capture from it needs neither `libnvargus.so` nor
+the daemon. Argus is an optional second consumer — useful if you ever want
+ISP-processed frames for a preview or a sanity check, and nothing more.
+
 ### 8.3 Project scaffolding
 
 Already in this repo, unbuilt:

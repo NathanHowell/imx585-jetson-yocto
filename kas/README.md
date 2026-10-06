@@ -171,18 +171,25 @@ reporting the plugin as broken, not a container that refuses to start:
 | needed by | host recipe to add |
 |---|---|
 | `libnvargus.so` + the `nvargus-daemon` socket, for `nvarguscamerasrc` | `tegra-libraries-camera`, `tegra-argus-daemon` |
-| `libtegrav4l2.so`, `libv4l/plugins/libv4l2_nvvideocodec.so`, for `nvv4l2decoder`/`nvv4l2*enc` | `tegra-libraries-multimedia-v4l` |
+| `libtegrav4l2.so`, `libv4l/plugins/libv4l2_nvvideocodec.so`, for `nvv4l2decoder` | `tegra-libraries-multimedia-v4l` |
 | `libnvmm*`, `libnvbufsurface`, `libnvbufsurftransform` | `tegra-libraries-multimedia`, `tegra-libraries-multimedia-utils` |
 
 Both `tegra-libraries-camera` and `tegra-libraries-multimedia-v4l` are
 `REQUIRED_DISTRO_FEATURES = "opengl"`, which is the concrete reason `opengl`
 stayed in `DISTRO_FEATURES` on a headless target — see **Headless** below.
 
-I did not add any of them: CUDA was the stated requirement and these are a
-different one. `/dev/v4l2-nvdec` and `/dev/v4l2-nvenc` are a separate open
-question — no `nvidia-kernel-oot` package in wrynose carries an nvdec or nvenc
-module, so on 6.8 they appear to have moved in-tree like the Tegra ASoC drivers
-did. Unverified.
+Decode only, on this board. `devices.csv` lists `/dev/v4l2-nvenc` because it is
+written for every Tegra, but the Orin Nano module — p3767-0003/0005, which is what
+`TEGRA_BOARDSKU = "0005"` in `orin-nano.inc` selects — has **no NVENC engine**.
+NVIDIA's module datasheet gives its video encode as "1080p30 supported by 1-2 CPU
+cores", i.e. software. NVDEC and NVJPEG are present. So `nvv4l2h264enc` and
+friends are unavailable no matter what is installed, and that CSV line will never
+resolve. Orin NX has NVENC; Orin Nano does not.
+
+I did not add any of these recipes: CUDA was the stated requirement and this is a
+different one. Separately, no `nvidia-kernel-oot` package in wrynose carries an
+nvdec module, so on 6.8 `/dev/v4l2-nvdec` appears to come from in-tree code now,
+the way the Tegra ASoC drivers did. Unverified.
 
 The GPU kernel driver is `nv-kernel-module-nvgpu`, which `tegra-libraries-cuda`
 only *recommends*; the image installs `nvidia-kernel-oot-compute-nvgpu`, which
@@ -197,6 +204,44 @@ behind it.
 `KERNEL_MODULE_AUTOLOAD` instead. The one unknown is whether `nvgpu` needs
 options from the L4T `/etc/modprobe.d/nvgpu.conf`, which ships in that same
 package and cannot be read without unpacking the deb.
+
+## Storage driver
+
+overlay, using the kernel's overlayfs, rootful.
+
+meta-virtualization ships `storage.conf` with `driver = "vfs"`, which copies every
+layer of every image instead of stacking them — a safe lowest-common-denominator
+default and a poor one on ext4. `meta-imx585`'s
+`container-host-config_%.bbappend` seds it to `overlay`, and
+`recipes-kernel/linux/files/containers.cfg` sets `CONFIG_OVERLAY_FS=y`. A sed
+rather than a replacement `storage.conf`, so upstream changes to the rest of the
+file still land. The bbappend lives under
+`meta-imx585/dynamic-layers/virtualization-layer/` and is reached through
+`BBFILES_DYNAMIC`, because a plain bbappend would be a dangling append — an error,
+not a warning — on a build without an engine include.
+
+Built in rather than `=m` on purpose: this image installs named
+`kernel-module-*` packages instead of `kernel-modules`, so a module would be one
+more thing to track by hand and one more way for the storage driver to fail at the
+first `podman pull`.
+
+Not `fuse-overlayfs`. That exists for rootless podman on kernels without
+unprivileged overlayfs, and it is slower on metadata-heavy work. The podman
+recipe's `rootless` PACKAGECONFIG — which is what pulls in `fuse-overlayfs` and
+`slirp4netns` — is off, and containers here run as root. (On 6.8 even rootless
+could use native overlay; unprivileged overlayfs landed in 5.11.)
+
+Not `btrfs` or `zfs`: both would mean changing the rootfs filesystem for no gain
+at this scale. `vfs` only as a fallback if overlay ever misbehaves.
+
+Two things native overlay needs, both already true here: xattr support on the
+upper filesystem (`xattr` is in `DISTRO_FEATURES_DEFAULTS`, the rootfs is ext4),
+and `/var/lib/containers` on a real filesystem rather than tmpfs or a nested
+overlay — it is on the NVMe rootfs.
+
+`[storage.options.overlay] mountopt = "nodev,metacopy=on"` is worth trying if
+image pulls feel slow; it avoids copying file data up on metadata-only changes.
+Left alone for now because it is a tuning knob, not a correctness one.
 
 ## Headless
 

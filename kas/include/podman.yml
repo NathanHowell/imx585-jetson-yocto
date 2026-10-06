@@ -36,9 +36,10 @@ local_conf_header:
     # VIRTUAL-RUNTIME_container_networking = ""
     # VIRTUAL-RUNTIME_container_dns = ""
 
-    # meta-virtualization ships storage.conf with driver = "vfs", which copies
-    # every layer instead of stacking them. Switch to overlay once you have
-    # confirmed overlayfs in the running kernel (lsmod | grep overlay).
+    # The storage driver is switched from meta-virtualization's vfs default to
+    # overlay by meta-imx585's container-host-config bbappend, with
+    # CONFIG_OVERLAY_FS=y from recipes-kernel/linux/files/containers.cfg. See
+    # "Storage driver" in kas/README.md.
 
   containers-runtime: |
     # Running a CUDA container, with the camera and the USB audio device:
