@@ -1,0 +1,20 @@
+[Unit]
+Description=Generate the NVIDIA CDI specification
+# nvidia-container-setup writes the runtime config that carries the csv
+# alt-roots setting; CDI generation in csv mode needs it in place first.
+Requires=nvidia-container-setup.service
+After=nvidia-container-setup.service
+Before=podman.service podman.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=cdi
+RuntimeDirectoryPreserve=yes
+# csv mode is the Tegra path: it discovers devices and libraries from
+# /etc/nvidia-container-runtime/host-files-for-container.d/*.csv rather than from
+# an NVML query, which is what works on an integrated GPU.
+ExecStart=/usr/bin/nvidia-ctk cdi generate --mode=csv --output=/run/cdi/nvidia.yaml
+
+[Install]
+WantedBy=multi-user.target

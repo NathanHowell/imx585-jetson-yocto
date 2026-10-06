@@ -75,15 +75,33 @@ IMX585_CONTAINER_GPU ?= "nvidia-container-toolkit nvidia-kernel-oot-compute-nvgp
 # confirms enumeration without any userspace ALSA packages installed.
 IMX585_USB_AUDIO ?= "kernel-module-snd-usb-audio"
 
-# Periodic TRIM for the NVMe rootfs. The package exists in oe-core with its
-# systemd timer disabled; meta-imx585's util-linux bbappend enables it.
+# Periodic TRIM, for the container store on the data partition more than for the
+# rootfs, which barely writes. The package exists in oe-core with its systemd
+# timer disabled; meta-imx585's util-linux bbappend enables it.
 IMAGE_INSTALL:append = " util-linux-fstrim"
+
+# Read-only rootfs plumbing: the data.mount unit for the persistent partition,
+# journald held in RAM, dropbear host keys moved off /etc. imx585-container-config
+# adds podman's read-only default and regenerates the CDI spec into /run, since
+# /etc/cdi cannot be written at runtime.
+IMAGE_INSTALL:append = " imx585-node-config imx585-container-config"
 
 # dropbear, not openssh: ~0.5 MB against ~4 MB, and it reads the same
 # ~/.ssh/authorized_keys that imx585-ssh-user.inc writes.
 # No package-management: that would put the rpm binary and its database in the
-# rootfs for no benefit on an image that is reflashed rather than updated.
-IMAGE_FEATURES = "ssh-server-dropbear"
+# rootfs for no benefit on an image that is reflashed rather than updated, and it
+# is meaningless against a read-only rootfs anyway.
+IMAGE_FEATURES = "ssh-server-dropbear read-only-rootfs"
+
+# read-only-rootfs makes oe-core's read_only_rootfs_hook rewrite the /dev/root
+# line in /etc/fstab from "defaults" to "ro", which is what actually enforces it
+# per image. The hook also appends "ro" to APPEND, which does nothing here: on
+# Tegra the kernel command line comes from UBOOT_EXTLINUX_KERNEL_ARGS in the
+# separate l4t-launcher-extlinux recipe. imx585.conf handles that end.
+#
+# If this build fails on a package whose postinst must run on the target, the
+# lever is IMAGE_FEATURES += "read-only-rootfs-delayed-postinsts" -- but read the
+# postinst first, because a deferred one has nowhere to record that it ran.
 
 # For bring-up on the serial console, when there is no key yet:
 # IMAGE_FEATURES += "empty-root-password allow-root-login serial-autologin-root"

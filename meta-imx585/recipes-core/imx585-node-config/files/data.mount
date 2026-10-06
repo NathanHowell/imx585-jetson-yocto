@@ -1,0 +1,19 @@
+[Unit]
+Description=Persistent data partition
+DefaultDependencies=no
+Before=local-fs.target umount.target
+Conflicts=umount.target
+
+# Skipped rather than failed when the partition does not exist yet, so a freshly
+# flashed board still boots. podman then refuses to start for want of its
+# graphroot, which is the error worth seeing.
+ConditionPathExists=/dev/disk/by-partlabel/@DATA_PARTLABEL@
+
+[Mount]
+What=/dev/disk/by-partlabel/@DATA_PARTLABEL@
+Where=@DATA_MOUNT@
+Type=ext4
+Options=noatime,nodev,nosuid
+
+[Install]
+WantedBy=local-fs.target
