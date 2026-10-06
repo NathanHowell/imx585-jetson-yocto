@@ -406,6 +406,42 @@ to whatever they like. There is no CC or FIPS certification. A discrete TPM (the
 Infineon SLB9670 boards plug onto pins 17–26 of the 40-pin header as-is, see the
 notes) is the answer if either of those matters.
 
+### What the TPM is for here, and what it is not
+
+**Not the sshd host key.** That stays an ordinary `dropbearkey` file on
+`/data/ssh`, as described under **Read-only rootfs**. A TPM-*held* host key would
+mean replacing dropbear with OpenSSH plus `tpm2-pkcs11`, an `ssh-agent` unit and a
+sqlite token store, because dropbear has no PKCS#11 or `HostKeyAgent` support at
+all. The host key only authenticates this node to an administrator over ssh, which
+is not where the fleet's trust actually sits.
+
+**The collector identity is.** A TPM-resident key that the telemetry agent uses as
+a TLS client credential is worth far more: it is what lets the collector
+distinguish this node from something replaying its data, and unlike
+`/proc/device-tree/serial-number` it cannot be copied to another box. `tpm2-tools`
+is in the image for provisioning and inspection; the key itself is created with
+`tpm2_createprimary` / `tpm2_create` and made persistent with `tpm2_evictcontrol`,
+into NV storage that now survives reboots because of `OPTEE_FS_PARENT_PATH` above.
+
+Three things to know before building that:
+
+- **The agent is in a container, so the provider has to be too.** Whatever speaks
+  TPM — `tpm2-openssl` as an OpenSSL 3 provider, or `tpm2-pkcs11` — belongs in the
+  agent's container image, not in this rootfs. The host only needs the device node
+  and `tee-supplicant`.
+- **Pass it in explicitly**: `--device /dev/tpmrm0`. Not `/dev/tpm0`: `tpmrm0` is
+  the in-kernel resource manager, which multiplexes transient object slots. Going
+  straight at `tpm0` means one consumer at a time and manual context juggling.
+- **It is still one TPM.** Two containers both holding persistent handles will
+  collide; keep a single consumer, or partition by handle range deliberately.
+
+Also worth doing eventually, and not done: dm-verity over the read-only rootfs with
+the root hash measured into a PCR, so the fTPM will only unseal for an unmodified
+image. That is the combination that makes a read-only rootfs mean something rather
+than being a convention. It is a larger piece of work, and NVIDIA has its own
+disk-encryption path on Tegra (`docs/Disk-Encryption-for-Jetson-Devices.md` in
+meta-tegra) that is worth reading first.
+
 ## Read-only containers
 
 `containers.conf.d/20-imx585.conf` sets `read_only = true`, so a container that
