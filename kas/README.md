@@ -51,14 +51,13 @@ tree reached 266G because they defaulted into it.
 | `include/kernel-linux-yocto.yml` | opt in to mainline linux-yocto 6.18 |
 | `include/podman.yml` | minimal image + podman (recommended engine) |
 | `include/docker.yml` | minimal image + docker instead |
-| `include/nvidia-container-toolkit.yml` | GPU/CUDA/Argus passthrough into containers |
 
 ## Images
 
 | | |
 |---|---|
 | `imx585-console-image` | bring-up: openssh, rpm on target, `kernel-modules`, strace/trace-cmd/bpftrace |
-| `imx585-minimal-image` | `packagegroup-core-boot` + the camera + one container engine, nothing else |
+| `imx585-minimal-image` | headless: `packagegroup-core-boot` + the camera + one container engine with CUDA and USB audio, nothing else |
 
 `imx585-minimal-image` installs `packagegroup-core-boot` directly instead of
 `CORE_IMAGE_BASE_INSTALL`. That one line is most of the size difference: going
@@ -82,13 +81,68 @@ and its `RCONFLICTS` is keyed off `PACKAGECONFIG` rather than `PODMAN_FEATURES`,
 so installing both collides on that file at rootfs time instead of failing
 cleanly.
 
-`nvidia-container-toolkit` is a separate include because it is engine-agnostic
-and because it is expensive: it RDEPENDS `libnvidia-container-tools` →
-`tegra-libraries-cuda`, plus `tegra-libraries-nvml` and
-`tegra-container-passthrough`, and that last one stages all of
-`/usr/lib/aarch64-linux-gnu` from the L4T camera, wayland, weston and gstreamer
-debs just to bind-mount it into containers. Raw V4L2 capture inside a container
-needs none of it — `--device /dev/video0 --device /dev/i2c-*` is enough.
+## CUDA in containers
+
+`nvidia-container-toolkit` is installed unconditionally, because containers here
+need CUDA. It is also the most expensive thing in the image: it RDEPENDS
+`libnvidia-container-tools` → `tegra-libraries-cuda` (`libcuda`,
+`libnvidia-nvvm`, `libnvidia-ptxjitcompiler`, pulling `tegra-libraries-core`),
+plus `tegra-libraries-nvml` and `tegra-container-passthrough`.
+
+`tegra-container-passthrough` is the part worth measuring. It unpacks the L4T
+camera, wayland, weston and gstreamer debs and stages all of
+`/usr/lib/aarch64-linux-gnu` from them under
+`${datadir}/nvidia-container-passthrough`, solely so the toolkit can bind-mount
+it into containers. On a headless target the wayland and weston half of that is
+dead weight, but I have not trimmed it: the file layout inside those debs is not
+visible without fetching them, and `drivers.csv` may reference paths in there. To
+decide, build once and look:
+
+```sh
+du -sh tmp/work/*/tegra-container-passthrough/*/image/usr/share/nvidia-container-passthrough
+du -sh tmp/work/*/tegra-container-passthrough/*/image/usr/share/nvidia-container-passthrough/usr/lib/aarch64-linux-gnu/* | sort -h | tail -20
+```
+
+then prune with a `tegra-container-passthrough_%.bbappend` if the numbers justify
+it. `EXCLUDE_FROM_SHLIBS` and `SKIP_FILEDEPS` are already set in that recipe, so
+removing files will not trip packaging QA.
+
+The GPU kernel driver is `nv-kernel-module-nvgpu`, which `tegra-libraries-cuda`
+only *recommends*; the image installs `nvidia-kernel-oot-compute-nvgpu`, which
+depends on it. `nvidia-kernel-oot-compute` is a different thing —
+`nvidia-uvm`, the open-RM/tegra264 path — and would drag the display modules in
+behind it.
+
+`nvgpu` is normally loaded by `nv-load-display-modules` from
+`tegra-configs-display-driver`, a script that also unconditionally modprobes
+`nvidia_drm`. With no display modules installed that fails and takes
+`systemd-modules-load.service` with it, so the image puts `nvgpu` in
+`KERNEL_MODULE_AUTOLOAD` instead. The one unknown is whether `nvgpu` needs
+options from the L4T `/etc/modprobe.d/nvgpu.conf`, which ships in that same
+package and cannot be read without unpacking the deb.
+
+## Headless
+
+`x11`, `wayland` and `vulkan` are in `DISTRO_FEATURES_OPTED_OUT`.
+
+`opengl` is not, and that is deliberate. It is not a display feature in this
+tree — it is the `REQUIRED_DISTRO_FEATURES` gate on `tegra-mmapi`, which is
+Argus, and on the NVIDIA gstreamer plugins. Dropping it would make the
+tegracam/Argus path of `IMX585-YOCTO-NOTES.md` §8.2 unbuildable rather than
+merely uninstalled. Nothing in the minimal image's install list pulls it in, so
+keeping it costs rootfs nothing.
+
+## USB audio
+
+`kernel-module-snd-usb-audio`, plus a `usb-audio.cfg` kernel fragment that pins
+`CONFIG_SND_USB_AUDIO=m` rather than trusting NVIDIA's `defconfig` to carry it.
+No userspace ALSA packages: `/proc/asound/cards` confirms enumeration, and the
+container gets the device with `--device /dev/snd`. The module autoloads from the
+USB modalias once udev is up, so it is not in `KERNEL_MODULE_AUTOLOAD`.
+
+None of the Tegra onboard-audio stack is installed — `nvidia-kernel-oot-alsa`
+and the fifteen `kernel-module-snd-soc-tegra*` packages are in the
+`MACHINE_EXTRA_RRECOMMENDS` that this image skips. USB audio does not need them.
 
 ## On the kernel choice
 

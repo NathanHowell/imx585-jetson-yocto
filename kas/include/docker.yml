@@ -1,4 +1,4 @@
-# Minimal image with docker instead of podman:
+# Minimal headless image with docker instead of podman:
 #
 #   kas build kas/imx585.yml:kas/include/docker.yml
 #
@@ -29,3 +29,8 @@ local_conf_header:
 
     # docker-moby RDEPENDS docker-moby-cli by itself (DOCKER_UNIFIED_PACKAGE).
     IMX585_CONTAINER_ENGINE = "docker-moby ca-certificates"
+
+    # With docker, the runtime hook is the conventional path rather than CDI:
+    #   nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
+    #   docker run --rm --runtime=nvidia --gpus all \
+    #     --device /dev/video0 --device /dev/snd <image>

@@ -1,7 +1,7 @@
-SUMMARY = "Minimal IMX585 + CEF168 image with one container engine"
-DESCRIPTION = "A core-image-minimal-sized rootfs that boots the Orin Nano, \
-binds the IMX585 sensor and the CEF168 lens controller, and runs exactly one \
-OCI container engine. Nothing else."
+SUMMARY = "Minimal headless IMX585 + CEF168 image with CUDA-capable containers"
+DESCRIPTION = "A core-image-minimal-sized rootfs that boots the Orin Nano \
+headless, binds the IMX585 sensor and the CEF168 lens controller, and runs one \
+OCI container engine with GPU/CUDA and USB audio passthrough. Nothing else."
 LICENSE = "MIT"
 
 inherit core-image
@@ -14,7 +14,7 @@ require imx585-ssh-user.inc
 # meta-tegra/conf/machine/include/tegra-common.inc: nvidia-kernel-oot-display,
 # tegra-configs-display-driver, tegra-nvfancontrol, tegra-nvsciipc,
 # tegra-redundant-boot, nvidia-kernel-oot-alsa, nvidia-kernel-oot-canbus and the
-# fifteen Tegra ASoC module packages. None of that is needed to capture frames.
+# fifteen Tegra ASoC module packages. None of that is needed here.
 #
 # packagegroup-core-boot still brings MACHINE_ESSENTIAL_EXTRA_RDEPENDS
 # (tegra-firmware, l4t-launcher-extlinux, nvidia-kernel-oot-base), which is what
@@ -25,6 +25,8 @@ IMAGE_INSTALL = " \
     packagegroup-core-boot \
     packagegroup-imx585-camera \
     ${IMX585_CONTAINER_ENGINE} \
+    ${IMX585_CONTAINER_GPU} \
+    ${IMX585_USB_AUDIO} \
     ${CORE_IMAGE_EXTRA_INSTALL} \
 "
 
@@ -44,6 +46,31 @@ IMX585_CONTAINER_ENGINE ?= "podman ca-certificates"
 # as a recipe at all. kas/include/podman.yml and kas/include/docker.yml add it;
 # building this image without one of them fails on a missing provider.
 
+# CUDA inside containers. This is the expensive part of the image and it is not
+# optional here, because that is the stated requirement.
+#
+# nvidia-container-toolkit RDEPENDS libnvidia-container-tools, which RDEPENDS
+# tegra-libraries-cuda (libcuda, libnvidia-nvvm, libnvidia-ptxjitcompiler, which
+# in turn pull tegra-libraries-core), plus tegra-libraries-nvml and
+# tegra-container-passthrough. That last one stages all of
+# /usr/lib/aarch64-linux-gnu from the L4T camera, wayland, weston and gstreamer
+# debs under ${datadir}/nvidia-container-passthrough purely to be bind-mounted
+# into containers, and it is the single biggest item in the rootfs. See
+# kas/README.md for how to measure and trim it on a headless target.
+#
+# nv-kernel-module-nvgpu is the Orin GPU driver and the one thing CUDA cannot
+# work without. tegra-libraries-cuda only RRECOMMENDS it, so name the package
+# that hard-depends on it. nvidia-kernel-oot-compute (as opposed to
+# -compute-nvgpu) is deliberately absent: that is nvidia-uvm, which belongs to
+# the open-RM/tegra264 path and would drag the display modules in behind it.
+IMX585_CONTAINER_GPU ?= "nvidia-container-toolkit nvidia-kernel-oot-compute-nvgpu"
+
+# USB Audio Class device, to be passed into a container with
+# `--device /dev/snd`. snd-usb-audio autoloads from the USB modalias once udev
+# is up, so it is not in KERNEL_MODULE_AUTOLOAD; `cat /proc/asound/cards`
+# confirms enumeration without any userspace ALSA packages installed.
+IMX585_USB_AUDIO ?= "kernel-module-snd-usb-audio"
+
 # dropbear, not openssh: ~0.5 MB against ~4 MB, and it reads the same
 # ~/.ssh/authorized_keys that imx585-ssh-user.inc writes.
 # No package-management: that would put the rpm binary and its database in the
@@ -53,7 +80,15 @@ IMAGE_FEATURES = "ssh-server-dropbear"
 # For bring-up on the serial console, when there is no key yet:
 # IMAGE_FEATURES += "empty-root-password allow-root-login serial-autologin-root"
 
-KERNEL_MODULE_AUTOLOAD:append = " imx585 cef168"
+# nvgpu is normally modprobed by nv-load-display-modules, which comes in the
+# tegra-configs-display-driver package. That script also unconditionally
+# modprobes nvidia_drm, so on an image with no display modules installed it
+# fails and takes systemd-modules-load.service down with it. Loading nvgpu
+# directly here replaces it. If nvgpu turns out to need options from the L4T
+# /etc/modprobe.d/nvgpu.conf -- which ships in that same package and cannot be
+# read without unpacking the deb -- install tegra-configs-display-driver and
+# accept the failing unit, or add nvidia-kernel-oot-display too.
+KERNEL_MODULE_AUTOLOAD:append = " imx585 cef168 nvgpu"
 
 IMAGE_LINGUAS = ""
 

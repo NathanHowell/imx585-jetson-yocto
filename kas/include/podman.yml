@@ -1,11 +1,11 @@
-# Minimal image with podman. This is the recommended container build:
+# Minimal headless image with podman. This is the recommended container build:
 #
 #   kas build kas/imx585.yml:kas/include/podman.yml
 #
 # podman only needs meta-virtualization. meta-tegra-community is NOT required --
 # nvidia-container-toolkit and libnvidia-container live in meta-tegra itself,
 # under external/virtualization-layer/, published through BBFILES_DYNAMIC as soon
-# as the virtualization-layer collection exists. See nvidia-container-toolkit.yml.
+# as the virtualization-layer collection exists.
 #
 # virtualization, seccomp and ipv6 are all already in DISTRO_FEATURES:
 # virtualization from imx585.conf, seccomp and ipv6 from
@@ -38,5 +38,19 @@ local_conf_header:
 
     # meta-virtualization ships storage.conf with driver = "vfs", which copies
     # every layer instead of stacking them. Switch to overlay once you have
-    # confirmed overlayfs in the running kernel (zcat /proc/config.gz | grep
-    # OVERLAY_FS, or lsmod | grep overlay).
+    # confirmed overlayfs in the running kernel (lsmod | grep overlay).
+
+  containers-runtime: |
+    # Running a CUDA container, with the camera and the USB audio device:
+    #
+    #   nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
+    #   podman run --rm \
+    #     --device nvidia.com/gpu=all \
+    #     --device /dev/video0 --device /dev/snd \
+    #     $(ls /dev/v4l-subdev* /dev/i2c-* | sed 's/^/--device /') \
+    #     <image>
+    #
+    # CDI, not the docker runtime hook: nvidia-ctk writes a spec listing the host
+    # libraries and device nodes to inject, and podman consumes it directly. The
+    # alt-roots setting that makes CSV mode find the staged L4T libraries is
+    # applied at boot by nvidia-container-setup.service.
