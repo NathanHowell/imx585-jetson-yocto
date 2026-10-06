@@ -75,6 +75,10 @@ IMX585_CONTAINER_GPU ?= "nvidia-container-toolkit nvidia-kernel-oot-compute-nvgp
 # confirms enumeration without any userspace ALSA packages installed.
 IMX585_USB_AUDIO ?= "kernel-module-snd-usb-audio"
 
+# Periodic TRIM for the NVMe rootfs. The package exists in oe-core with its
+# systemd timer disabled; meta-imx585's util-linux bbappend enables it.
+IMAGE_INSTALL:append = " util-linux-fstrim"
+
 # dropbear, not openssh: ~0.5 MB against ~4 MB, and it reads the same
 # ~/.ssh/authorized_keys that imx585-ssh-user.inc writes.
 # No package-management: that would put the rpm binary and its database in the

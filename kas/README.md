@@ -205,6 +205,70 @@ behind it.
 options from the L4T `/etc/modprobe.d/nvgpu.conf`, which ships in that same
 package and cannot be read without unpacking the deb.
 
+## Root filesystem
+
+ext4, and on Tegra that is a constraint rather than a preference.
+
+`extlinux.conf-support.md` in meta-tegra is explicit:
+
+> The ext4 implementation in L4TLauncher may have bugs or limitations that prevent
+> it from reading `extlinux.conf` or other rootfs files when newer ext4 features
+> are in use. **Non-ext4 root filesystems are unlikely to work.**
+
+L4TLauncher is NVIDIA's UEFI application, and it reads `/boot/extlinux/extlinux.conf`,
+the `FDT` device tree and the `OVERLAYS` list **out of the rootfs partition**,
+before Linux exists. Its only filesystem reader is ext4. This project depends on
+that path directly: `UBOOT_EXTLINUX_FDTOVERLAYS = "imx585-overlay.dtbo"` in
+`imx585.conf` is applied by L4TLauncher from the rootfs. A btrfs or f2fs root
+would leave it unable to find any of it, and it would silently fall back to
+partition-based boot — booting the `kernel-dtb` partition's device tree with no
+IMX585 overlay.
+
+The flashing path agrees. `image_types_tegra.bbclass` sets
+`IMAGE_TEGRAFLASH_FS_TYPE ??= "ext4.simg"`, and NVIDIA's flash scripts stage
+`resize2fs`, `e2fsck` and `dumpe2fs` to fit the rootfs image to the partition.
+
+So the alternatives, briefly, for the record:
+
+| | |
+|---|---|
+| **btrfs** | The real temptation — transparent zstd compression would pay for itself on the L4T libraries, and podman has a native btrfs storage driver using subvolumes instead of overlayfs. Dead on arrival: L4TLauncher cannot read it. Would need a separate ext4 `/boot` partition and a custom flash layout. |
+| **f2fs** | Built for raw NAND and for eMMC/SD behind a dumb FTL. An NVMe SSD has its own controller, DRAM and SLC cache doing the same job, so there is little left to win, and the same bootloader problem applies. |
+| **xfs** | No compression, no snapshots, nothing ext4 lacks at this scale. Same bootloader problem. |
+| **erofs** | Read-only. Interesting for a locked-down variant with a writable overlay for `/var`, but it does not fit a system whose whole point is a mutable container store. |
+
+### What is worth doing instead
+
+`util-linux-fstrim`, with `fstrim.timer` enabled by a bbappend. oe-core packages
+the timer but ships it `disable`d. Without periodic TRIM the drive's FTL never
+learns which blocks the filesystem freed, so sustained write performance decays
+and wear levelling has less spare area — and a container store that pulls and
+deletes images churns a lot of blocks. Weekly batched trim, not `discard` at
+mount time: continuous discard issues a DEALLOCATE on every delete and stalls the
+submission queue.
+
+Two notes on the ext4 itself:
+
+- meta-tegra's warning about "newer ext4 features" is already cleared
+  empirically. The previous build in `oe4t-config/` flashed and booted with
+  L4TLauncher reading `extlinux.conf` and the overlay from an OE-generated ext4
+  rootfs, and its poky (`702c515`, 5.3_M2-741) carried **e2fsprogs 1.47.3** —
+  which already defaults to `orphan_file` and `metadata_csum_seed`. wrynose has
+  1.47.4. No precautionary feature disabling is needed, and `TEGRA_EXT4_OPTIONS`
+  is the lever (`-O ^metadata_csum_seed`) if that ever changes.
+- `EXTRA_IMAGECMD:ext4` is `-i 4096 -b 4096` from `tegra-common.inc`: one inode
+  per 4 KB rather than per 16 KB. Four times the inodes of an oe-core default, at
+  a few percent of the partition — which a container store full of small files
+  wants.
+
+Worth more attention than the filesystem type: `ROOTFSPART_SIZE_DEFAULT` for this
+machine is 28 GiB, and `imx585.conf` sets
+`USE_REDUNDANT_FLASH_LAYOUT_DEFAULT = "1"`, so A/B halves that to roughly 14 GiB
+per slot — and `/var/lib/containers` lives inside it. CUDA plus a couple of
+`l4t-jetpack`-based images will make that tight. If it bites, the fix is a
+separate data partition for the container store outside the A/B pair, not a
+different filesystem.
+
 ## Storage driver
 
 overlay, using the kernel's overlayfs, rootful.
