@@ -52,11 +52,15 @@ IMX585_CONTAINER_ENGINE ?= "podman ca-certificates"
 # nvidia-container-toolkit RDEPENDS libnvidia-container-tools, which RDEPENDS
 # tegra-libraries-cuda (libcuda, libnvidia-nvvm, libnvidia-ptxjitcompiler, which
 # in turn pull tegra-libraries-core), plus tegra-libraries-nvml and
-# tegra-container-passthrough. That last one stages all of
-# /usr/lib/aarch64-linux-gnu from the L4T camera, wayland, weston and gstreamer
-# debs under ${datadir}/nvidia-container-passthrough purely to be bind-mounted
-# into containers, and it is the single biggest item in the rootfs. See
-# kas/README.md for how to measure and trim it on a headless target.
+# tegra-container-passthrough. The weight is in tegra-libraries-cuda: four named
+# libraries out of the 137 MB nvidia-l4t-3d-core deb, plus libcuda.so.1.1 from
+# the 22 MB nvidia-l4t-cuda-nvgpu deb.
+#
+# tegra-container-passthrough is NOT the expensive one -- see kas/README.md. It
+# stages the L4T wayland, weston and gstreamer shared libraries under
+# ${datadir}/nvidia-container-passthrough to be bind-mounted into containers;
+# those three debs are 55 KB, 1.6 MB and 2.5 MB compressed. Nothing in the image
+# loads them and there is no gstreamer installation here to use them.
 #
 # nv-kernel-module-nvgpu is the Orin GPU driver and the one thing CUDA cannot
 # work without. tegra-libraries-cuda only RRECOMMENDS it, so name the package

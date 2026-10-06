@@ -84,28 +84,39 @@ cleanly.
 ## CUDA in containers
 
 `nvidia-container-toolkit` is installed unconditionally, because containers here
-need CUDA. It is also the most expensive thing in the image: it RDEPENDS
-`libnvidia-container-tools` → `tegra-libraries-cuda` (`libcuda`,
-`libnvidia-nvvm`, `libnvidia-ptxjitcompiler`, pulling `tegra-libraries-core`),
-plus `tegra-libraries-nvml` and `tegra-container-passthrough`.
+need CUDA. It RDEPENDS `libnvidia-container-tools` → `tegra-libraries-cuda`
+(`libcuda`, `libnvidia-nvvm`, `libnvidia-ptxjitcompiler`, pulling
+`tegra-libraries-core`), plus `tegra-libraries-nvml` and
+`tegra-container-passthrough`.
 
-`tegra-container-passthrough` is the part worth measuring. It unpacks the L4T
-camera, wayland, weston and gstreamer debs and stages all of
-`/usr/lib/aarch64-linux-gnu` from them under
-`${datadir}/nvidia-container-passthrough`, solely so the toolkit can bind-mount
-it into containers. On a headless target the wayland and weston half of that is
-dead weight, but I have not trimmed it: the file layout inside those debs is not
-visible without fetching them, and `drivers.csv` may reference paths in there. To
-decide, build once and look:
+The weight is in `tegra-libraries-cuda`. It installs four named libraries out of
+the **137 MB** `nvidia-l4t-3d-core` deb, plus `libcuda.so.1.1` and
+`libcuda_instrumentation.so` from the 22 MB `nvidia-l4t-cuda-nvgpu` deb.
+`tegra-libraries-core` adds a further 24 libraries from a 4.0 MB deb, and
+`tegra-libraries-nvml` one library plus `nvidia-smi` from a 1.2 MB deb. Those are
+compressed deb sizes, not installed sizes — the recipes install named subsets, so
+the installed figure is smaller and I have not measured it.
 
-```sh
-du -sh tmp/work/*/tegra-container-passthrough/*/image/usr/share/nvidia-container-passthrough
-du -sh tmp/work/*/tegra-container-passthrough/*/image/usr/share/nvidia-container-passthrough/usr/lib/aarch64-linux-gnu/* | sort -h | tail -20
-```
+### There is no gstreamer in this image
 
-then prune with a `tegra-container-passthrough_%.bbappend` if the numbers justify
-it. `EXCLUDE_FROM_SHLIBS` and `SKIP_FILEDEPS` are already set in that recipe, so
-removing files will not trip packaging QA.
+`tegra-container-passthrough` is where the gstreamer, wayland and weston names
+come from, and it is not the expensive part. It unpacks those L4T debs and stages
+their `/usr/lib/aarch64-linux-gnu` trees under
+`${datadir}/nvidia-container-passthrough`, where `nvidia-container-toolkit`'s CSV
+mode bind-mounts them into containers that want them. Measured against NVIDIA's
+feed at `39.2.1-20260806224157`:
+
+| deb | compressed |
+|---|---|
+| `nvidia-l4t-wayland` | 55 KB |
+| `nvidia-l4t-weston` | 1.6 MB |
+| `nvidia-l4t-gstreamer` | 2.5 MB |
+
+That is the whole headless-irrelevant payload: about 4 MB of debs. No gstreamer
+*installation* exists in the rootfs — no `gstreamer1.0` core, no plugin registry,
+nothing on the loader path. These are inert files waiting to be mounted
+elsewhere, so trimming them with a bbappend would buy single-digit MB and risk
+breaking any container that does want NVIDIA gstreamer or Weston. Not worth it.
 
 The GPU kernel driver is `nv-kernel-module-nvgpu`, which `tegra-libraries-cuda`
 only *recommends*; the image installs `nvidia-kernel-oot-compute-nvgpu`, which
