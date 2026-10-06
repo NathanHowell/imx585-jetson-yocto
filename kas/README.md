@@ -118,6 +118,72 @@ nothing on the loader path. These are inert files waiting to be mounted
 elsewhere, so trimming them with a bbappend would buy single-digit MB and risk
 breaking any container that does want NVIDIA gstreamer or Weston. Not worth it.
 
+### How the staged tree is consumed
+
+`tegra-configs-container-csv` installs two files into
+`/etc/nvidia-container-runtime/host-files-for-container.d/`. They are the whole
+interface, and they are in meta-tegra's git, not inside a deb:
+
+| | |
+|---|---|
+| `devices.csv` | 43 `dev,` lines — `/dev/nvhost-*-gpu`, `/dev/nvgpu/igpu0/*`, `/dev/nvmap`, `/dev/nvsciipc`, `/dev/v4l2-nvdec`, `/dev/v4l2-nvenc`, `/dev/dri/*` |
+| `drivers.csv` | ~250 `lib,` / `sym,` lines naming host files to bind-mount and symlinks to recreate inside the container |
+
+`nvidia-ctk cdi generate --mode=csv` walks those lines and writes a CDI spec; the
+engine then applies the mounts. The container image ships **no** NVIDIA
+userspace — it is version-locked to the host driver, so it is injected at
+start-up. That is the entire design of `nvcr.io/nvidia/l4t-*`.
+
+The paths in `drivers.csv` fall into two families, and this is why the shadow
+root exists:
+
+- **`/usr/lib/...`** — satisfied straight out of this image's real rootfs,
+  because OE installs to `${libdir}` = `/usr/lib` with no Debian multiarch
+  triplet. `libcuda.so.1.1`, `libnvidia-nvvm`, `libnvidia-ptxjitcompiler`,
+  `libnvrm_*`, `libnvos`, `libnvsciipc`, `libnvidia-ml.so.1`, `nvidia-smi` all
+  land exactly where the CSV expects them.
+- **`/usr/lib/aarch64-linux-gnu/...`** — paths that can never exist on an OE
+  rootfs. These are what `tegra-container-passthrough` stages under
+  `${datadir}/nvidia-container-passthrough`, and what meta-tegra's
+  `0001-Add-support-for-alternate-roots-for-tegra-CSV-handli.patch` teaches the
+  toolkit to look for, via the `alt-roots` setting that
+  `nvidia-container-setup.service` writes at boot.
+
+The gstreamer entries are in that second family:
+`gstreamer-1.0/libgstnvarguscamerasrc.so`, `libgstnvvideo4linux2.so`,
+`libgstnvvidconv.so`, `libgstnvjpeg.so`, `libgstnvcompositor.so`,
+`libgstnvv4l2camerasrc.so`, the sinks, plus `libgstnvegl-1.0.so.0`,
+`libgstnvexifmeta.so` and `nvidia/libgstnvcustomhelper.so*`. They mount to
+`/usr/lib/aarch64-linux-gnu/gstreamer-1.0/`, which is where a Debian or Ubuntu
+container's gstreamer already scans — so the intended container is **Ubuntu noble
+arm64 with its own `gstreamer1.0` core from apt**, which then finds
+`nvvidconv`, `nvv4l2decoder`, `nvv4l2h264enc` and friends as if they were
+installed. The plugins are only plugins; nothing in the staged tree provides
+`libgstreamer-1.0.so.0`.
+
+### What will not work as built
+
+Those gstreamer plugins will mount but fail to load. Their L4T dependencies are
+`/usr/lib/...`-family entries that this image does not install, and CSV discovery
+skips missing entries rather than failing, so the symptom is `gst-inspect-1.0`
+reporting the plugin as broken, not a container that refuses to start:
+
+| needed by | host recipe to add |
+|---|---|
+| `libnvargus.so` + the `nvargus-daemon` socket, for `nvarguscamerasrc` | `tegra-libraries-camera`, `tegra-argus-daemon` |
+| `libtegrav4l2.so`, `libv4l/plugins/libv4l2_nvvideocodec.so`, for `nvv4l2decoder`/`nvv4l2*enc` | `tegra-libraries-multimedia-v4l` |
+| `libnvmm*`, `libnvbufsurface`, `libnvbufsurftransform` | `tegra-libraries-multimedia`, `tegra-libraries-multimedia-utils` |
+
+Both `tegra-libraries-camera` and `tegra-libraries-multimedia-v4l` are
+`REQUIRED_DISTRO_FEATURES = "opengl"`, which is the concrete reason `opengl`
+stayed in `DISTRO_FEATURES` on a headless target — see **Headless** below.
+
+I did not add any of them: CUDA was the stated requirement and these are a
+different one. `/dev/v4l2-nvdec` and `/dev/v4l2-nvenc` are a separate open
+question — no `nvidia-kernel-oot` package in wrynose carries an nvdec or nvenc
+module, so on 6.8 they appear to have moved in-tree like the Tegra ASoC drivers
+did. Unverified.
+
 The GPU kernel driver is `nv-kernel-module-nvgpu`, which `tegra-libraries-cuda`
 only *recommends*; the image installs `nvidia-kernel-oot-compute-nvgpu`, which
 depends on it. `nvidia-kernel-oot-compute` is a different thing —
