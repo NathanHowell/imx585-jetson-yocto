@@ -435,12 +435,88 @@ Three things to know before building that:
 - **It is still one TPM.** Two containers both holding persistent handles will
   collide; keep a single consumer, or partition by handle range deliberately.
 
-Also worth doing eventually, and not done: dm-verity over the read-only rootfs with
-the root hash measured into a PCR, so the fTPM will only unseal for an unmodified
-image. That is the combination that makes a read-only rootfs mean something rather
-than being a convention. It is a larger piece of work, and NVIDIA has its own
-disk-encryption path on Tegra (`docs/Disk-Encryption-for-Jetson-Devices.md` in
-meta-tegra) that is worth reading first.
+## Rootfs integrity: what it would take
+
+Not built. Recorded because the research is easy to lose and the conclusions are
+not obvious.
+
+### meta-tegra's disk-encryption doc is not the thing
+
+`docs/Disk-Encryption-for-Jetson-Devices.md` is 52 lines of community notes
+transcribed from a Matrix thread, and it is about **LUKS encryption, not verity
+integrity**. Those solve opposite problems: encryption stops a thief reading the
+disk, verity stops anyone modifying it. A read-only rootfs built from a public
+Yocto image holds no secrets, so encrypting it buys close to nothing — what it
+needs is the guarantee that what boots is what was built.
+
+Two things in that doc are also out of date:
+
+- It says to run `gen_ekb.py` by hand. meta-tegra automates this:
+  `tegra-eks-image` runs `gen_ekb.py` from `optee-nvsamples-native` with
+  `TEGRA_GEN_EKB_ARGS`, and flashes the result as the `eks` partition.
+  `TEGRA_EKB_SYM2` is documented in that recipe as the disk-encryption key that
+  `hwkey-agent` and `luks-srv` consume.
+- Its manual privileged post-build script exists because LUKS-formatting an image
+  needs device-mapper. That reasoning does not apply to our data partition, which
+  is created on the running target by `imx585-data-partition.service` — where
+  device-mapper is available and `nvluks-srv-app` is already installed. If we want
+  the container store encrypted, that service is the place, not a sudo script on
+  the build host.
+
+### The verity pieces that do exist
+
+In **meta-security** (the root layer, not the `meta-tpm` sublayer we currently
+enable):
+
+| | |
+|---|---|
+| `classes/dm-verity-img.bbclass` | adds an `ext4.verity` image type: the ext4 with a hash tree appended, plus a `.verity.env` carrying `ROOT_HASH`, `DATA_SIZE` and `DATA_BLOCK_SIZE` |
+| `recipes-core/images/dm-verity-image-initramfs.bb` | an initramfs-framework initramfs that reads that env and `veritysetup create`s the root |
+| `recipes-core/initrdscripts/initramfs-framework-dm/dmverity` | the hook that does it |
+
+### Tegra integration is easier than it looks
+
+`tegra-minimal-initramfs` uses `tegra-minimal-init`, not initramfs-framework, so
+meta-security's `initramfs-module-dmverity` will not drop in. But
+`tegra-minimal-init`'s `init-boot.sh` sources **`/etc/platform-preboot`** before it
+resolves the root device, and that file can set `rootdev`, `opt` and `fstype`. So
+the integration is a small recipe that installs a `platform-preboot` running
+`veritysetup create rootfs …` and setting `rootdev=/dev/mapper/rootfs`, added
+through `TEGRA_INITRD_INSTALL` along with `cryptsetup` and the dm-verity module.
+No replacing the init, no adopting initramfs-framework.
+
+### Two real risks
+
+1. **The flash path may resize the rootfs.** A verity image cannot be resized —
+   that moves or invalidates the appended hash tree — and
+   `image_types_tegra.bbclass` stages `resize2fs`, `e2fsck` and `dumpe2fs` for
+   NVIDIA's flash scripts. Whether the resize runs for a plain `ext4.simg` write
+   needs checking before anything else, because if it does, this does not work
+   without disabling it. `ROOTFSPART_SIZE` must also cover image plus hash tree.
+2. **`IMAGE_TEGRAFLASH_FS_TYPE` would become a chained conversion**
+   (`ext4.verity.simg`). `verity` and `simg` are both in `CONVERSIONTYPES`, and
+   sparse encoding is content-agnostic, so it ought to work. Unverified.
+
+A/B is fine: the same image goes to both slots, so the same root hash, and each
+slot carries its own matching `/boot/initrd` — which is what has to be updated in
+lockstep with the rootfs. L4TLauncher can still read `/boot` from a verity image,
+because the ext4 is intact at the front and the hash tree is appended after it.
+
+### The trust anchor is the whole question
+
+The root hash sits in **plaintext** in the initrd. Verity is only as good as
+whatever vouches for that file. On Tegra the answer already exists:
+`l4t-launcher-extlinux`'s `do_sign_files` signs `extlinux.conf`, the DTB, the
+overlays **and `initrd`**, through `tegra-uefi-signing`.
+
+So rootfs integrity here means *fused secure boot*, not dm-verity by itself.
+Without fused keys, verity detects accidental corruption and nothing else: an
+attacker who can rewrite the rootfs can rewrite the initrd beside it and put their
+own root hash in. The same caveat applies to the fTPM, for the same reason.
+
+Whether NVIDIA's measured boot extends a PCR the fTPM could seal against — the
+fTPM TA is built `CFG_TA_MEASURED_BOOT=y`, so something is being measured — has
+not been checked, and which PCRs carry what is NVIDIA-specific.
 
 ## Read-only containers
 
