@@ -1,0 +1,31 @@
+# Minimal image with docker instead of podman:
+#
+#   kas build kas/imx585.yml:kas/include/docker.yml
+#
+# Pick this only if something you run genuinely needs the docker API or
+# docker-compose. It is the heavier of the two: dockerd and containerd and runc
+# and docker-cli are four Go binaries where podman is one plus crun and conmon in
+# C, and docker additionally RDEPENDS the full util-linux and bridge-utils.
+#
+# Do not combine with podman.yml. meta-virtualization's podman installs a
+# ${bindir}/docker compatibility wrapper (PODMAN_FEATURES = "docker") but
+# declares its RCONFLICTS from PACKAGECONFIG, which does not contain "docker" --
+# so instead of a clean conflict you get a file collision on /usr/bin/docker at
+# rootfs time.
+header:
+  version: 14
+
+repos:
+  meta-virtualization:
+    url: https://git.yoctoproject.org/meta-virtualization
+    branch: wrynose
+
+target:
+  - imx585-minimal-image
+
+local_conf_header:
+  docker: |
+    CONTAINER_PROFILE = "docker"
+
+    # docker-moby RDEPENDS docker-moby-cli by itself (DOCKER_UNIFIED_PACKAGE).
+    IMX585_CONTAINER_ENGINE = "docker-moby ca-certificates"

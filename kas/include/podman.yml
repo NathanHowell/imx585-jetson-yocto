@@ -1,0 +1,42 @@
+# Minimal image with podman. This is the recommended container build:
+#
+#   kas build kas/imx585.yml:kas/include/podman.yml
+#
+# podman only needs meta-virtualization. meta-tegra-community is NOT required --
+# nvidia-container-toolkit and libnvidia-container live in meta-tegra itself,
+# under external/virtualization-layer/, published through BBFILES_DYNAMIC as soon
+# as the virtualization-layer collection exists. See nvidia-container-toolkit.yml.
+#
+# virtualization, seccomp and ipv6 are all already in DISTRO_FEATURES:
+# virtualization from imx585.conf, seccomp and ipv6 from
+# DISTRO_FEATURES_DEFAULTS. podman's features_check wants the latter two.
+header:
+  version: 14
+
+repos:
+  meta-virtualization:
+    url: https://git.yoctoproject.org/meta-virtualization
+    branch: wrynose
+
+target:
+  - imx585-minimal-image
+
+local_conf_header:
+  podman: |
+    # Sets VIRTUAL-RUNTIME_container_{engine,runtime,networking,dns} to
+    # podman/crun/netavark/aardvark-dns. Must be a hard assignment: layer.conf
+    # already set CONTAINER_PROFILE ?= "default", and the profile include is
+    # resolved later, by the meta-virt-container-cfg USER_CLASS.
+    CONTAINER_PROFILE = "podman"
+
+    IMX585_CONTAINER_ENGINE = "podman ca-certificates"
+
+    # Smaller still, if containers only ever need --network=host: this drops
+    # netavark and aardvark-dns, which are the two Rust binaries in the stack.
+    # VIRTUAL-RUNTIME_container_networking = ""
+    # VIRTUAL-RUNTIME_container_dns = ""
+
+    # meta-virtualization ships storage.conf with driver = "vfs", which copies
+    # every layer instead of stacking them. Switch to overlay once you have
+    # confirmed overlayfs in the running kernel (zcat /proc/config.gz | grep
+    # OVERLAY_FS, or lsmod | grep overlay).

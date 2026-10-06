@@ -1,0 +1,30 @@
+# GPU, CUDA and Argus passthrough into containers. Works with either engine, and
+# is by far the most expensive thing you can add to this image:
+#
+#   kas build kas/imx585.yml:kas/include/podman.yml:kas/include/nvidia-container-toolkit.yml
+#
+# nvidia-container-toolkit RDEPENDS libnvidia-container-tools, which RDEPENDS
+# tegra-libraries-cuda, plus tegra-libraries-nvml and tegra-container-passthrough.
+# tegra-container-passthrough unpacks the L4T camera, wayland, weston and
+# gstreamer debs and stages all of /usr/lib/aarch64-linux-gnu from them under
+# ${datadir}/nvidia-container-passthrough purely so it can be bind-mounted into
+# containers. Expect this include to add several hundred MB to the rootfs.
+#
+# Skip it if containers only need raw V4L2: /dev/video0, /dev/v4l-subdev* and
+# /dev/i2c-* can be passed with --device and need none of this.
+#
+# Requires an engine include (podman.yml or docker.yml) for meta-virtualization;
+# that layer's collection name is what activates meta-tegra's
+# external/virtualization-layer subtree.
+header:
+  version: 14
+
+local_conf_header:
+  nvidia-container-toolkit: |
+    IMAGE_INSTALL:append = " nvidia-container-toolkit"
+
+    # With podman, wire it up through CDI rather than the docker runtime hook:
+    #   nvidia-ctk cdi generate --mode=csv --output=/etc/cdi/nvidia.yaml
+    #   podman run --device nvidia.com/gpu=all ...
+    # The alt-roots setting that makes CSV mode find the staged libraries is
+    # applied at boot by nvidia-container-setup.service.
