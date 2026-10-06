@@ -57,7 +57,7 @@ tree reached 266G because they defaulted into it.
 | | |
 |---|---|
 | `imx585-console-image` | bring-up: openssh, rpm on target, `kernel-modules`, strace/trace-cmd/bpftrace |
-| `imx585-minimal-image` | headless: `packagegroup-core-boot` + the camera + one container engine with CUDA and USB audio, nothing else |
+| `imx585-minimal-image` | headless, read-only rootfs: `packagegroup-core-boot` + the camera + one container engine with CUDA and USB audio, container store on a separate data partition |
 
 `imx585-minimal-image` installs `packagegroup-core-boot` directly instead of
 `CORE_IMAGE_BASE_INSTALL`. That one line is most of the size difference: going
@@ -268,6 +268,91 @@ per slot — and `/var/lib/containers` lives inside it. CUDA plus a couple of
 `l4t-jetpack`-based images will make that tight. If it bites, the fix is a
 separate data partition for the container store outside the A/B pair, not a
 different filesystem.
+
+## Read-only rootfs
+
+`imx585-minimal-image` sets `IMAGE_FEATURES += "read-only-rootfs"`. The console
+image stays writable for bring-up.
+
+One thing does not work out of the box. oe-core's hook appends `ro` to `APPEND`,
+but on Tegra the kernel command line comes from `UBOOT_EXTLINUX_KERNEL_ARGS` in
+the separate `l4t-launcher-extlinux` recipe, so an image variable never reaches
+`extlinux.conf`. `imx585.conf` sets it instead — distro-wide, since there is one
+`extlinux.conf` per build. Harmless for the console image: its `/etc/fstab` still
+says `defaults` and `systemd-remount-fs` puts `/` back read-write.
+
+What the rest of the system needs, in `imx585-node-config`:
+
+| | |
+|---|---|
+| journald | `Storage=volatile`, `RuntimeMaxUse=64M`. `Storage=auto` would fall back to volatile anyway with `/var/log/journal` absent, but by accident rather than decision — and the default cap is 10% of RAM, 800 MB here. |
+| dropbear | `dropbearkey.service` writes to `/etc/dropbear`, which cannot exist. Host keys move to the data partition; keys in `/run` would regenerate every boot and make every reconnection look like a MITM. Only `dropbearkey` gets the condition override — giving `dropbear@.service` a condition testing for the key's *absence* would stop the server once the key existed. |
+| CDI spec | `nvidia-ctk cdi generate --output=/etc/cdi/...` cannot write to a read-only `/etc`. `nvidia-cdi-generate.service` regenerates it into `/run/cdi` each boot, after `nvidia-container-setup.service`, which is what puts the csv `alt-roots` setting in place. |
+
+Node identity is the module's EEPROM serial from
+`/proc/device-tree/serial-number`, not `/etc/machine-id`. With `/etc` read-only
+systemd generates a transient machine-id into a tmpfs on every boot, so it is
+useless for correlating telemetry; the serial needs no mechanism in the image,
+survives reflashing, and is printed on the hardware.
+
+If the build fails on a package whose postinst must run on the target, the lever
+is `IMAGE_FEATURES += "read-only-rootfs-delayed-postinsts"` — but read the
+postinst first, because a deferred one has nowhere to record that it ran.
+
+## Data partition
+
+The container store cannot live in `/var/lib`. On a read-only rootfs oe-core's
+`volatile-binds` bind-mounts a tmpfs over `/var/lib` — its service carries
+`ConditionPathIsReadWrite=!/var/lib`, so it activates exactly when the rootfs is
+read-only — and an image store there would be in RAM, lost on every reboot and
+fatal to an 8 GB module well before that.
+
+So `graphroot` moves to `/data/containers/storage`, on its own ext4 partition.
+`runroot` stays under `/run`, which is where it belongs.
+
+The NVIDIA flash layout leaves the NVMe's tail unallocated: `ROOTFSPART_SIZE` is
+28 GiB, halved to ~14 GiB per slot by A/B, and the rest of the device is free.
+`imx585-data-partition.service` claims it on first boot:
+
+```
+nvme0n1
+├─ p1  APP       14 GiB   rootfs slot A, ro
+├─ p2  APP_b     14 GiB   rootfs slot B, ro
+├─ …   small L4T partitions
+└─ free  ──sgdisk ──▶  imx585-data   →  /data   (ext4, noatime,nodev,nosuid)
+```
+
+Properties worth knowing:
+
+- **Idempotent on two conditions**, the GPT partition label *and* the presence of
+  a filesystem. The second matters: the kernel will not re-read a partition table
+  while partitions on the disk are mounted, so `partx -a` adds the new partition
+  through BLKPG. If even that fails the script succeeds with a message, and the
+  next boot finds the partition, sees no filesystem, and formats it.
+- **Escape hatch.** `imx585.no_data_partition` on the kernel command line skips
+  it entirely without touching the GPT.
+- **Refuses rather than guesses.** No readable GPT, or a largest free block under
+  `DATA_MIN_BYTES` (8 GiB), and it fails having changed nothing. A partition too
+  small to be useful is worse than none, because podman would start and fill it.
+- **The disk is decided at build time**, not discovered: `DATA_DISK` drops the
+  partition suffix from `TNSPEC_BOOTDEV` (`nvme0n1p1` → `nvme0n1`).
+- `data.mount` is conditional on the device existing, so an unprovisioned board
+  still boots and podman fails on its missing graphroot, which is the error worth
+  seeing.
+- `mkfs.ext4 -i 8192 -m 1`: twice the default inode count, because an overlay
+  store is mostly small files, and 1% reserved instead of 5%.
+
+With the store out of the rootfs, A/B redundancy stops being a space problem —
+~14 GiB per slot against a rootfs of a couple of GB — and starts being the point:
+atomic rootfs updates with the data left alone.
+
+## Read-only containers
+
+`containers.conf.d/20-imx585.conf` sets `read_only = true`, so a container that
+wants scratch space has to ask with `--tmpfs` or a volume. That is the intent: a
+container writing into its own image layer is storing state nobody will collect.
+`log_size_max` is capped at 10 MB, because container logs land in a journal that
+lives in RAM.
 
 ## Storage driver
 

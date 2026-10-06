@@ -10,7 +10,7 @@ IMX585 has no PDAF; focus is closed-loop off image sharpness.)
 | | |
 |---|---|
 | `kas/` | the build. wrynose (Yocto 6.0 LTS) + meta-tegra `wrynose` = JetPack 7.2.1 / L4T R39.2.1, NVIDIA kernel 6.8.12. See `kas/README.md`. |
-| `meta-imx585/` | the Yocto layer: IMX585 + CEF168 driver recipes, device tree overlay, full DTs, and two images (`imx585-console-image` for bring-up, `imx585-minimal-image` for a headless camera node running CUDA containers). **Unbuilt on wrynose** — see `meta-imx585/PORTING.md`. |
+| `meta-imx585/` | the Yocto layer: IMX585 + CEF168 driver recipes, device tree overlay, full DTs, and two images (`imx585-console-image` for bring-up, `imx585-minimal-image` for a headless read-only camera node running CUDA containers). **Unbuilt on wrynose** — see `meta-imx585/PORTING.md`. |
 | `oe4t-config/` | read-only snapshot of the previous OE4T build (R36.4 / linux-yocto 6.12) and everything that existed only on local disk. |
 | `oe4t-config/archive/` | git bundles and patch series for unpushed work, incl. 25 commits of tegracam conversion. |
 | `IMX585-YOCTO-NOTES.md` | sensor datasheet notes, driver comparison, frame-rate math, HDR vs linear, AF plan. |

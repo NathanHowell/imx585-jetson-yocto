@@ -1,0 +1,15 @@
+[Unit]
+Description=Create the persistent data partition if it does not exist
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=@DATA_MOUNT_UNIT@ local-fs.target
+# Reads /proc/cmdline and writes the GPT; needs nothing mounted but /.
+RequiresMountsFor=/
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@LIBEXECDIR@/imx585-data-partition-setup
+
+[Install]
+WantedBy=local-fs.target

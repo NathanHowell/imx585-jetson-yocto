@@ -12,6 +12,8 @@ REQUIRED_DISTRO_FEATURES = "systemd"
 
 SRC_URI = " \
     file://data.mount \
+    file://imx585-data-partition.service \
+    file://imx585-data-partition-setup \
     file://10-volatile-journal.conf \
     file://10-hostkey-dir.conf \
     file://10-hostkey-condition.conf \
@@ -27,12 +29,35 @@ DATA_MOUNT ?= "/data"
 DATA_PARTLABEL ?= "imx585-data"
 DATA_MOUNT_UNIT = "${@d.getVar('DATA_MOUNT').strip('/').replace('/', '-')}.mount"
 
+# The disk to partition, derived from the machine's boot device by dropping the
+# partition suffix: nvme0n1p1 -> nvme0n1, mmcblk0p1 -> mmcblk0. Done without the
+# re module, which bitbake does not expose to inline python. Override if the data
+# partition belongs on a different disk from the rootfs.
+DATA_DISK ?= "/dev/${@d.getVar('TNSPEC_BOOTDEV').rstrip('0123456789').rstrip('p')}"
+
+# Refuse to create anything smaller than this. A tiny partition would be worse
+# than none: podman would start and then fill it.
+DATA_MIN_BYTES ?= "8589934592"
+
 do_install() {
     install -d ${D}${DATA_MOUNT}
+
+    # First-boot partition creation. Keyed on the GPT label, so later boots exit
+    # immediately; see the script for the imx585.no_data_partition escape hatch.
+    install -d ${D}${libexecdir}
+    sed -e 's|@DATA_DISK@|${DATA_DISK}|g' \
+        -e 's|@DATA_PARTLABEL@|${DATA_PARTLABEL}|g' \
+        -e 's|@DATA_MIN_BYTES@|${DATA_MIN_BYTES}|g' \
+        ${UNPACKDIR}/imx585-data-partition-setup > ${D}${libexecdir}/imx585-data-partition-setup
+    chmod 0755 ${D}${libexecdir}/imx585-data-partition-setup
 
     install -d ${D}${systemd_system_unitdir}
     sed -e 's|@DATA_MOUNT@|${DATA_MOUNT}|g' -e 's|@DATA_PARTLABEL@|${DATA_PARTLABEL}|g' \
         ${UNPACKDIR}/data.mount > ${D}${systemd_system_unitdir}/${DATA_MOUNT_UNIT}
+
+    sed -e 's|@DATA_MOUNT_UNIT@|${DATA_MOUNT_UNIT}|g' -e 's|@LIBEXECDIR@|${libexecdir}|g' \
+        ${UNPACKDIR}/imx585-data-partition.service \
+        > ${D}${systemd_system_unitdir}/imx585-data-partition.service
 
     # journald: everything of interest is shipped to the collector, so nothing
     # is written locally. On a read-only rootfs Storage=auto would fall back to
@@ -61,12 +86,17 @@ do_install() {
         > ${D}${systemd_system_unitdir}/dropbear@.service.d/10-hostkey-dir.conf
 }
 
-SYSTEMD_SERVICE:${PN} = "${DATA_MOUNT_UNIT}"
+SYSTEMD_SERVICE:${PN} = "${DATA_MOUNT_UNIT} imx585-data-partition.service"
 
 FILES:${PN} += " \
     ${systemd_system_unitdir} \
     ${systemd_unitdir}/journald.conf.d \
+    ${libexecdir}/imx585-data-partition-setup \
     ${DATA_MOUNT} \
 "
+
+# sgdisk writes the GPT, partx makes the kernel see the new partition without a
+# full table re-read (impossible with the rootfs mounted), mkfs.ext4 formats it.
+RDEPENDS:${PN} = "gptfdisk util-linux-partx util-linux-blkid e2fsprogs-mke2fs"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"

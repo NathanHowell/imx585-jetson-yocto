@@ -1,0 +1,95 @@
+#!/bin/sh
+# Create and format the persistent data partition in the unallocated space the
+# NVIDIA flash layout leaves at the end of the boot device. Idempotent: keyed on
+# the GPT partition label and the presence of a filesystem, so every boot after
+# the first is a no-op.
+set -eu
+
+DISK="@DATA_DISK@"
+LABEL="@DATA_PARTLABEL@"
+MIN_BYTES="@DATA_MIN_BYTES@"
+DEV="/dev/disk/by-partlabel/${LABEL}"
+
+log() { echo "imx585-data-partition: $*"; }
+
+format_it() {
+    # -i 8192: one inode per 8 KB rather than the 16 KB default. An overlay image
+    #   store is mostly small files and would run out of inodes long before space.
+    # -m 1: 1% reserved for root rather than 5%, worth 4.5 GB on a 450 GB volume.
+    log "formatting $1"
+    mkfs.ext4 -q -L "${LABEL}" -i 8192 -m 1 "$1"
+}
+
+# Recovery escape hatch. Add imx585.no_data_partition to the kernel command line
+# (extlinux.conf APPEND, or interactively) to boot without touching the GPT.
+if grep -qw imx585.no_data_partition /proc/cmdline; then
+    log "disabled on the kernel command line; leaving ${DISK} alone"
+    exit 0
+fi
+
+# Already provisioned, by an earlier boot or by hand. Check for a filesystem too:
+# the partition can exist without one, either because a previous run created it
+# and the kernel had not picked it up yet, or because someone made it manually.
+if [ -e "${DEV}" ]; then
+    fstype=$(blkid -o value -s TYPE "${DEV}" 2>/dev/null || true)
+    if [ -n "${fstype}" ]; then
+        exit 0
+    fi
+    log "${LABEL} exists with no filesystem"
+    format_it "${DEV}"
+    exit 0
+fi
+
+if [ ! -b "${DISK}" ]; then
+    log "ERROR: ${DISK} is not a block device"
+    exit 1
+fi
+
+# Refuse to touch a disk without a readable GPT. tegraflash wrote one; if it is
+# unreadable then something is wrong enough that guessing is the wrong move.
+if ! sgdisk -p "${DISK}" >/dev/null 2>&1; then
+    log "ERROR: ${DISK} has no readable GPT"
+    exit 1
+fi
+
+# -F is the first aligned sector of the largest free block, -E its last.
+first=$(sgdisk -F "${DISK}")
+last=$(sgdisk -E "${DISK}")
+sector=$(cat "/sys/class/block/$(basename "${DISK}")/queue/logical_block_size")
+free=$(( (last - first + 1) * sector ))
+
+if [ "${free}" -lt "${MIN_BYTES}" ]; then
+    log "ERROR: largest free block on ${DISK} is ${free} bytes, need ${MIN_BYTES}."
+    log "       Nothing was changed. Either the device is smaller than expected,"
+    log "       or ROOTFSPART_SIZE consumed the space."
+    exit 1
+fi
+
+log "creating ${LABEL} on ${DISK}: sectors ${first}-${last}, ${free} bytes"
+# 0:0:0 is "next free partition number, start and end of the largest free block".
+# typecode 8300 is Linux filesystem data.
+sgdisk --new=0:0:0 --typecode=0:8300 --change-name="0:${LABEL}" "${DISK}"
+
+# The kernel will not re-read a whole partition table while partitions on the
+# disk are mounted -- and the rootfs is. partx adds just the new partition
+# through BLKPG, which does work.
+partx -a "${DISK}" 2>/dev/null || true
+udevadm settle --timeout=30 || true
+
+i=0
+while [ ! -e "${DEV}" ] && [ "${i}" -lt 15 ]; do
+    sleep 1
+    i=$((i + 1))
+done
+
+if [ ! -e "${DEV}" ]; then
+    # The partition is in the GPT; only this kernel's view of it is stale. Say so
+    # and succeed, so the unit does not fail. The next boot sees the partition,
+    # finds no filesystem on it, and formats it.
+    log "created ${LABEL}, but the running kernel has not picked it up."
+    log "Reboot to finish: the filesystem will be created on the next boot."
+    exit 0
+fi
+
+format_it "${DEV}"
+log "done"
