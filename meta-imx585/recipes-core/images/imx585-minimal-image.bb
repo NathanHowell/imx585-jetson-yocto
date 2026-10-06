@@ -101,7 +101,17 @@ IMX585_FTPM ?= " \
     kernel-module-tpm-ftpm-tee \
     imx585-ftpm-config \
     tpm2-tools \
+    openssl-bin \
+    tpm2-openssl \
 "
+# openssl-bin + tpm2-openssl are here for one job: enrolling this node's client
+# identity. The key is created inside the fTPM and cannot leave it, so the CSR
+# has to be signed on the node, which means an OpenSSL that can drive the TPM:
+#   openssl genpkey -provider tpm2 ... -out /data/pki/node.tss2.key
+# See "Using it as a client identity" in kas/README.md. The resulting TSS2 PEM is
+# a wrapped blob, not a key, so it is safe on /data and safe to bind-mount into a
+# read-only container. tpm2-abrmd is deliberately absent -- the in-kernel
+# resource manager at /dev/tpmrm0 supersedes it.
 IMAGE_INSTALL:append = " ${IMX585_FTPM}"
 
 # dropbear, not openssh: ~0.5 MB against ~4 MB, and it reads the same

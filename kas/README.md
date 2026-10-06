@@ -423,17 +423,127 @@ is in the image for provisioning and inspection; the key itself is created with
 `tpm2_createprimary` / `tpm2_create` and made persistent with `tpm2_evictcontrol`,
 into NV storage that now survives reboots because of `OPTEE_FS_PARENT_PATH` above.
 
-Three things to know before building that:
+### Using it as a client identity
 
-- **The agent is in a container, so the provider has to be too.** Whatever speaks
-  TPM — `tpm2-openssl` as an OpenSSL 3 provider, or `tpm2-pkcs11` — belongs in the
-  agent's container image, not in this rootfs. The host only needs the device node
-  and `tee-supplicant`.
-- **Pass it in explicitly**: `--device /dev/tpmrm0`. Not `/dev/tpm0`: `tpmrm0` is
-  the in-kernel resource manager, which multiplexes transient object slots. Going
-  straight at `tpm0` means one consumer at a time and manual context juggling.
-- **It is still one TPM.** Two containers both holding persistent handles will
-  collide; keep a single consumer, or partition by handle range deliberately.
+The fTPM does not give you an authentication protocol. It gives you exactly one
+thing: **an asymmetric key that cannot be copied off this board.** Everything
+else is ordinary PKI. So the whole design is one key, one certificate, and then
+per-consumer plumbing to reach them.
+
+The key is ECC P-256, not RSA — NVIDIA changed RSA EK generation incompatibly
+between L4T releases and recommends ECC for exactly that reason, and an fTPM
+RSA-2048 keygen is slow enough to notice.
+
+The artifact to produce is a **TSS2 PEM** file (`-----BEGIN TSS2 PRIVATE KEY-----`).
+That is not a private key: it is the TPM's wrapped key blob plus a parent handle,
+useless on any other machine. It can sit on `/data` in the clear, and be bind-mounted
+read-only into a container, which is what makes the read-only-container rule hold
+without exception.
+
+```
+# shape only -- nothing here has been run on hardware yet
+openssl genpkey -provider tpm2 -provider default -algorithm EC \
+        -pkeyopt group:P-256 -out /data/pki/node.tss2.key
+openssl req     -provider tpm2 -provider default -new \
+        -key /data/pki/node.tss2.key -subj "/CN=$(tegra-serial)" -out node.csr
+```
+
+`tpm2-openssl` registers a decoder for TSS2 PEM, so once the provider is loaded
+every OpenSSL-based client — `curl`, `stunnel`, anything linking libssl — takes
+that file as `--key` with no further ceremony. `tpm2_encodeobject` produces the
+same format from a `tpm2_create`d key if the handle is built with tpm2-tools instead.
+
+For a single node, a CA is optional: self-sign, and pin the resulting certificate
+on the collector as its client CA. The point of the TPM is not a chain of trust,
+it is that the credential cannot be lifted off the box.
+
+#### The OTel collector can use it directly
+
+`configtls` grew native TPM support in collector v1.32.0/v0.126.0. It opens
+`/dev/tpmrm0` itself and loads a TSS2-format `key_file` — no PKCS#11, no OpenSSL
+provider, nothing extra in the container image:
+
+```yaml
+exporters:
+  otlp:
+    endpoint: collector.lan:4317
+    tls:
+      ca_file:   /etc/pki/collector-ca.crt
+      cert_file: /etc/pki/node.crt
+      key_file:  /etc/pki/node.tss2.key
+      tpm:
+        enabled: true
+        path: /dev/tpmrm0
+```
+
+```
+podman run --read-only --device /dev/tpmrm0 -v /data/pki:/etc/pki:ro ...
+```
+
+`reload_interval` covers certificate rotation; the key never rotates, because it
+cannot leave the TPM.
+
+#### Podman cannot, and needs a credential helper
+
+Registry mTLS in podman means dropping `client.cert`/`client.key` into
+`/etc/containers/certs.d/<registry>/`, and those are read by Go's `crypto/tls`
+through `containers/image`. Go has no PKCS#11 and no provider mechanism, and
+nothing there understands TSS2. **A TPM-held key cannot be used for registry
+mTLS.** No configuration fixes this.
+
+The supported hook is `credHelpers` in `containers-auth.json(5)`: a map of
+registry to helper suffix, invoking `docker-credential-<suffix>` over the
+docker-credential-helpers stdio protocol. So the TPM authenticates *once*, to a
+token endpoint, and podman gets a short-lived bearer token:
+
+```json
+{ "credHelpers": { "registry.lan": "tpm" } }
+```
+
+`/usr/bin/docker-credential-tpm` reads a server name on stdin and writes
+`{"ServerURL":…,"Username":…,"Secret":…}`; in between it can be a dozen lines of
+shell around `curl --cert /data/pki/node.crt --key /data/pki/node.tss2.key`. The
+alternative — terminating mTLS in a local `stunnel` and pointing podman at
+`127.0.0.1` — works too, and is worse: it hides the registry name from podman's
+own trust policy.
+
+Worth saying plainly: for a single node on a private network, a long-lived
+registry token in a `0600` file on `/data` is a defensible choice, and the helper
+is only worth writing if the registry already has a token endpoint.
+
+#### Things that will bite
+
+- **Pass `/dev/tpmrm0`, never `/dev/tpm0`.** `tpmrm0` is the in-kernel resource
+  manager and multiplexes transient object slots; `tpm0` is one consumer at a
+  time with manual context juggling. `tpm2-abrmd` is not needed and is not
+  installed — the kernel resource manager supersedes it.
+- **Pass `-provider tpm2` on the command line.** The usual way to load a provider
+  is an `openssl.cnf` edit, and `/etc` is read-only here. Either keep it explicit,
+  as above, or ship the `providers` stanza from a recipe — do not expect to drop
+  it in on the node.
+- **It is still one TPM.** Two containers both creating persistent handles will
+  collide. Keep one consumer, or partition the handle range on purpose.
+- **There is no EK certificate unless we make one.** NVIDIA's flow has the vendor
+  pre-generate RSA and EC EK certs and encode them into the EKB at manufacturing
+  time; we are the vendor, and have not. So attestation-style enrollment ("prove
+  you are a genuine TPM") is unavailable, and enrolment is trust-on-first-use:
+  register the public key out of band, once. For one node that is not a
+  compromise, it is the correct amount of machinery.
+- **Wiping `/data/tee` destroys the key.** The EPS is derived — NVIDIA documents
+  `EPS = KDF(key=fTPM_Root_Seed, info=Device_SN, salt=EPS_Seed)`, rooted in the
+  bootloader seed and the fuse serial number — so the *EK* comes back after a
+  wipe. A child key created with `tpm2_create` does not: its sensitive area is
+  random and lives in that secure storage. Either keep the re-enrollment path
+  working, or make the identity key a primary key with fixed template and
+  `unique` data, which is re-derivable from the board alone.
+- **The TPM stops the key being copied, not used.** Root on this node can sign
+  with it at will; what it cannot do is take it elsewhere. That is the threat
+  this is worth spending on, and it is why fused secure boot is a separate
+  question — see **Rootfs integrity** below.
+- **PCR0 is live.** MB2 packages its boot event log into a buffer the fTPM TA
+  parses and extends into PCR0 (the TA is built `CFG_TA_MEASURED_BOOT=y`), so
+  sealing a secret to boot state is possible. It also makes every firmware
+  update a re-sealing event. Not worth it here.
 
 ## Rootfs integrity: what it would take
 
