@@ -35,6 +35,15 @@ repos:
   meta-tegra:
     url: https://github.com/OE4T/meta-tegra.git
 
+  meta-security:
+    url: https://git.yoctoproject.org/meta-security
+    layers:
+      # Only the meta-tpm sublayer: LAYERDEPENDS_tpm-layer is core,
+      # openembedded-layer and meta-python, all of which are already here, and
+      # nothing needs the parent "security" collection. Provides tpm2-tss and
+      # tpm2-tools for the OP-TEE firmware TPM (OPTEE_ENABLE_FTPM in imx585.conf).
+      meta-tpm:
+
   meta-openembedded:
     url: https://git.openembedded.org/meta-openembedded
     layers:

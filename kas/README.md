@@ -346,6 +346,66 @@ With the store out of the rootfs, A/B redundancy stops being a space problem —
 ~14 GiB per slot against a rootfs of a couple of GB — and starts being the point:
 atomic rootfs updates with the data left alone.
 
+## Firmware TPM
+
+`OPTEE_ENABLE_FTPM = "1"` in `imx585.conf`. No hardware: NVIDIA ships the
+Microsoft `ms-tpm-20-ref` implementation as an OP-TEE trusted application
+(`optee-ftpm`, UUID `bc50d971-d4c9-42c4-82cb-343fb7f37896`), built
+`CFG_TA_MEASURED_BOOT=y CFG_USE_PLATFORM_EPS=y`, so the endorsement seed is
+derived from this module's own fuses. The result is `/dev/tpm0` and `/dev/tpmrm0`.
+
+meta-tegra defaults it on for tegra264 (Thor) and off for tegra234, but Orin
+supports it — `optee-ftpm` is `COMPATIBLE_MACHINE = "(tegra)"`.
+
+**This changes the OP-TEE binary.** The fTPM and its helper go in as *early* TAs
+through `EARLY_TA_PATHS` in `optee-os`, so the TOS partition has to be rewritten:
+tegraflash, or a capsule/BUP update. Not a rootfs-only change.
+
+### The trap
+
+`optee-client` defaults `CFG_TEE_FS_PARENT_PATH` to `${localstatedir}/lib/tee`,
+and on a read-only rootfs `/var/lib` is a tmpfs courtesy of `volatile-binds`. The
+fTPM keeps its NV indexes, persistent handles and sealed blobs in OP-TEE secure
+storage under that path — so the default would give you a TPM that **silently
+forgets every key on reboot**, looking for all the world like a working but
+freshly-provisioned TPM.
+
+`OPTEE_FS_PARENT_PATH = "${IMX585_DATA_MOUNT}/tee"` moves it to the data
+partition. `imx585-ftpm-config` creates the directory through `tmpfiles.d` and
+adds a `RequiresMountsFor` drop-in so `tee-supplicant` cannot start before the
+partition is mounted — same failure otherwise. The recipe refuses to build if the
+two paths drift apart.
+
+### What is installed
+
+| | |
+|---|---|
+| `optee-client` | `tee-supplicant`, plus `tee-ftpm-modprobe.service` (built only when `OPTEE_ENABLE_FTPM` is set) |
+| `kernel-module-tpm-ftpm-tee` | the `/dev/tpm0` driver. `CONFIG_TCG_FTPM_TEE=m` in `tpm.cfg` — it must be a module, because `optee-nvsamples` RDEPENDS this package name and the rootfs will not assemble without it |
+| `optee-ftpm`, `optee-nvsamples-ftpm-helper` | the TA and its helper |
+| `tpm2-tools` | from `meta-security/meta-tpm`, the only reason that layer is in `base.yml` |
+
+The umbrella `optee-nvsamples` package is deliberately not installed: it would
+also drag in the `luks-srv`, `hwkey-agent` and `pkcs11-sample` host apps, none of
+which anything here calls.
+
+To check it came up: `tpm2_getcap properties-fixed` with
+`TPM2TOOLS_TCTI=device:/dev/tpmrm0`.
+
+### What it is and is not
+
+Keys are sealed to a seed derived from the SoC fuses, so they are device-unique
+and non-portable, and that is a genuine improvement on
+`/proc/device-tree/serial-number` for identifying this node to the collector —
+a serial number is readable by anything and forgeable by anything.
+
+But the keys live in OP-TEE secure-world memory, which is software isolation, not
+a tamper-resistant die. Its trustworthiness rests on fused secure boot: without
+that, anyone who can replace the bootloader replaces OP-TEE, and the fTPM attests
+to whatever they like. There is no CC or FIPS certification. A discrete TPM (the
+Infineon SLB9670 boards plug onto pins 17–26 of the 40-pin header as-is, see the
+notes) is the answer if either of those matters.
+
 ## Read-only containers
 
 `containers.conf.d/20-imx585.conf` sets `read_only = true`, so a container that

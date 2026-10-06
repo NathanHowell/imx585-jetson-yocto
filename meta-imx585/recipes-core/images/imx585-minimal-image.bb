@@ -86,6 +86,24 @@ IMAGE_INSTALL:append = " util-linux-fstrim"
 # /etc/cdi cannot be written at runtime.
 IMAGE_INSTALL:append = " imx585-node-config imx585-container-config"
 
+# Firmware TPM 2.0. OPTEE_ENABLE_FTPM in imx585.conf is what builds the fTPM and
+# its helper into OP-TEE as early TAs; these are the normal-world halves.
+# optee-client brings tee-supplicant and the tee-ftpm-modprobe unit,
+# kernel-module-tpm-ftpm-tee is the /dev/tpm0 driver, and imx585-ftpm-config puts
+# OP-TEE secure storage on the data partition so the TPM keeps its keys.
+#
+# The umbrella optee-nvsamples package is deliberately not used: it would also
+# bring luks-srv, hwkey-agent and pkcs11-sample host apps that nothing here calls.
+IMX585_FTPM ?= " \
+    optee-client \
+    optee-ftpm \
+    optee-nvsamples-ftpm-helper \
+    kernel-module-tpm-ftpm-tee \
+    imx585-ftpm-config \
+    tpm2-tools \
+"
+IMAGE_INSTALL:append = " ${IMX585_FTPM}"
+
 # dropbear, not openssh: ~0.5 MB against ~4 MB, and it reads the same
 # ~/.ssh/authorized_keys that imx585-ssh-user.inc writes.
 # No package-management: that would put the rpm binary and its database in the

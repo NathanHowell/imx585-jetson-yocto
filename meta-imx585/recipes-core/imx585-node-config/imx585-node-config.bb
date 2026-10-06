@@ -25,7 +25,8 @@ S = "${UNPACKDIR}"
 # mount unit looks for. systemd derives a .mount unit's name from its path, so
 # DATA_MOUNT and the generated unit name have to agree -- hence the mangling
 # below rather than a fixed filename.
-DATA_MOUNT ?= "/data"
+IMX585_DATA_MOUNT ??= "/data"
+DATA_MOUNT ?= "${IMX585_DATA_MOUNT}"
 DATA_PARTLABEL ?= "imx585-data"
 DATA_MOUNT_UNIT = "${@d.getVar('DATA_MOUNT').strip('/').replace('/', '-')}.mount"
 

@@ -17,7 +17,8 @@ SRC_URI = " \
 
 S = "${UNPACKDIR}"
 
-DATA_MOUNT ?= "/data"
+IMX585_DATA_MOUNT ??= "/data"
+DATA_MOUNT ?= "${IMX585_DATA_MOUNT}"
 CONTAINER_GRAPHROOT ?= "${DATA_MOUNT}/containers/storage"
 
 do_install() {
