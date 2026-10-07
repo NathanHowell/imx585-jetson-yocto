@@ -33,6 +33,27 @@
 	fragment@0 {
 		target-path = "/";
 		__overlay__ {
+			/* Supplies. The driver does devm_regulator_bulk_get() for
+			 * "vana", "vdig" and "vddl", so all three must resolve to
+			 * something; these nodes are what they resolve to.
+			 *
+			 * All three are always-on, and on Jetson that is the accurate
+			 * model rather than a shortcut. will127534's Raspberry Pi overlay
+			 * points vana-supply at cam1_reg with
+			 * startup-delay-us = <300000> and uses cam_dummy_reg for the
+			 * other two, because the RPi CAM connector's 3V3 is switched by a
+			 * host GPIO -- so there the delay covers the on-board LDOs coming
+			 * up after 3V3 is applied. The p3768 camera FPC has no such gate:
+			 * 3V3 is present whenever the carrier is, so there is nothing for
+			 * a startup delay to apply to, and the single camera GPIO is
+			 * CAM_EN, already used as reset-gpios below.
+			 *
+			 * vana is the only rail the host actually provides. vdig and vddl
+			 * are generated ON StarlightEye and cannot be controlled from
+			 * here at all; they are modelled rather than left as bare dummies
+			 * only so the topology and voltages are written down. Treat them
+			 * as the equivalent of will's cam_dummy_reg.
+			 */
 			imx585_vana: regulator-imx585-vana {
 				compatible = "regulator-fixed";
 				regulator-name = "imx585_vana";
@@ -65,13 +86,21 @@
 				clock-output-names = "imx585-inck";
 			};
 
+			/* U2, LP5907MFX-1.8: an LDO on StarlightEye fed from the FPC
+			 * 3V3, feeding the whole 1.8 V domain -- the sensor's VDDL and
+			 * the TMP117/IMU/CH32V003 on this leg.
+			 *
+			 * vin-supply was <&vdd_1v8_ao>, which was wrong: that is the
+			 * carrier's own always-on 1.8 V rail and it does not reach the
+			 * camera connector. U2's input is the 3V3 the FPC carries.
+			 */
 			imx585_vddl: regulator-imx585-vddl {
 				compatible = "regulator-fixed";
 				regulator-name = "imx585_vddl";
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-always-on;
-				vin-supply = <&vdd_1v8_ao>;
+				vin-supply = <&vdd_3v3_ao>;
 			};
 
 			tegra-capture-vi  {
