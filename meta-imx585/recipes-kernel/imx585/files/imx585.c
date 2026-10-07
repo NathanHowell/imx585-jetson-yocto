@@ -911,8 +911,8 @@ static int imx585_apply_exposure(struct imx585 *priv)
 	u32 lines;
 	u32 shr;
 
-	lines = div_u64((u64)priv->exposure_us * IMX585_PIXEL_RATE,
-			(u64)priv->hmax * 1000000ULL);
+	lines = div64_u64((u64)priv->exposure_us * IMX585_PIXEL_RATE,
+			  (u64)priv->hmax * 1000000ULL);
 	lines = clamp(lines, (u32)IMX585_EXPOSURE_MIN, priv->vmax - shr_min);
 
 	/* SHR is kept even, as will127534's driver does. */
@@ -936,8 +936,10 @@ static int imx585_apply_frame_rate(struct imx585 *priv)
 	if (priv->frame_rate <= 0)
 		return -EINVAL;
 
-	vmax = div_u64(IMX585_PIXEL_RATE * 1000000ULL,
-		       (u64)priv->hmax * priv->frame_rate);
+	/* The divisor is HMAX * micro-fps, 3.3e10 at 50 fps, so it needs the
+	 * 64-bit-divisor form; div_u64() takes a u32 divisor. */
+	vmax = div64_u64(IMX585_PIXEL_RATE * 1000000ULL,
+			 (u64)priv->hmax * priv->frame_rate);
 	vmax = clamp(vmax, imx585_get_min_vmax(priv, mode),
 		     (u32)IMX585_VMAX_MAX);
 	vmax &= ~1U;
@@ -1262,6 +1264,34 @@ static int imx585_init_inck_sel(struct imx585 *priv)
 	return -EINVAL;
 }
 
+/* tegracam creates gain, exposure and frame_rate with a default of 0 and only
+ * narrows their ranges at stream start, which clamps the current value to the
+ * mode's minimum. It never pushes those values into the sensor, so the stream
+ * runs at the defaults cached in priv while the controls report the minimums.
+ * Writing the defaults into the controls at probe keeps the two in step. With
+ * the sensor powered off tegracam records the value without touching it. */
+static void imx585_seed_controls(struct imx585 *priv)
+{
+	struct v4l2_ctrl_handler *hdl = priv->s_data->ctrl_handler;
+	const struct {
+		u32 id;
+		s64 val;
+	} seeds[] = {
+		{ TEGRA_CAMERA_CID_GAIN, priv->gain },
+		{ TEGRA_CAMERA_CID_EXPOSURE, priv->exposure_us },
+		{ TEGRA_CAMERA_CID_FRAME_RATE, priv->frame_rate },
+	};
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(seeds); i++) {
+		struct v4l2_ctrl *ctrl = v4l2_ctrl_find(hdl, seeds[i].id);
+
+		if (!ctrl || v4l2_ctrl_s_ctrl_int64(ctrl, seeds[i].val))
+			dev_warn(priv->dev, "could not seed control 0x%x\n",
+				 seeds[i].id);
+	}
+}
+
 static int imx585_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -1361,6 +1391,8 @@ static int imx585_probe(struct i2c_client *client)
 	err = tegracam_v4l2subdev_register(tc_dev, true);
 	if (err)
 		goto unregister_lens;
+
+	imx585_seed_controls(priv);
 
 	dev_info(dev, "Sony IMX585 tegracam driver registered\n");
 	return 0;
