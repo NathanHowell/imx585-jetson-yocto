@@ -755,6 +755,22 @@ static int imx585_start_streaming(struct tegracam_device *tc_dev)
 	if (err)
 		goto unlock;
 
+	/* Release master stop. imx585_common_regs starts with 0x3002 = 0x01 and
+	 * nothing else in this driver ever clears it, so without this write the
+	 * sensor stays in master stop and never produces a frame no matter what
+	 * MODE_SELECT says. Ordering is deliberate and matches the
+	 * pre-conversion driver: XMSTA is released *before* leaving standby, not
+	 * after the post-MODE_SELECT settling delay.
+	 *
+	 * Upstream guards this with `if (sync_mode != SYNC_EXTERNAL)`; we have no
+	 * external-sync plumbing, so it is unconditional. If XVS/XHS slave mode is
+	 * ever wired up, this write must become conditional again -- in slave mode
+	 * the master start is what the external pulse provides.
+	 */
+	err = cci_write(priv->regmap, IMX585_REG_XMSTA, 0x00, NULL);
+	if (err)
+		goto unlock;
+
 	err = cci_write(priv->regmap, IMX585_REG_MODE_SELECT,
 			   IMX585_MODE_STREAMING, NULL);
 	if (err)
