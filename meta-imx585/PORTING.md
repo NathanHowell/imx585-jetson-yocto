@@ -142,8 +142,7 @@ verbatim, keeping the baseline's two-registers-per-line layout so the block stay
 directly comparable against will127534's register tables, and the restored table
 was re-diffed against the baseline: 226 entries, identical.
 
-Neither has been exercised on hardware. They remove two reasons the sensor could
-not stream; whether it does is still unknown.
+Both verified on hardware: the sensor probes and streams. See "First light".
 
 3. **`imx585_init_inck_sel()` requires a readable clock rate.** It calls
    `clk_get_rate(priv->xclk)` and returns `-EINVAL` on no table match, before
@@ -257,14 +256,14 @@ a file someone will read as documentation is a trap, and they become live the
 moment the driver is swapped. The overlay compiles and the values were confirmed
 by round-tripping the deployed `.dtbo` with `dtc -I dtb`.
 
-**Still untested on hardware.** The remaining known-unknowns are the supplies,
-the `cil_settletime = 0` assumption, and whether ClearHDR/mono are wanted back.
+Verified on hardware: the supplies and `cil_settletime = 0` work as described.
+Whether ClearHDR/mono are wanted back is still open.
 
 ### The control path
 
 Reading the driver against `camera_common.c`, `tegracam_v4l2.c` and Kurokesu's
 `nv_imx585.c` turned up four more defects, each of which denies a usable frame
-or a usable control on its own. All four are fixed; none is hardware-tested.
+or a usable control on its own. All four are fixed and verified on hardware.
 
 - **Mode table vs. DT.** The driver listed 1928x1090 at index 0 and 3856x2180 at
   index 1 while the overlay describes a single `mode0` of 3856x2180.
@@ -304,6 +303,50 @@ presence check that reads `MODE_SELECT` after the reset pulse and expects
 STANDBY; `reset-gpios` is now `GPIO_ACTIVE_LOW` in the overlay and the driver
 asserts/releases it in the conventional sense (CAM_EN is XCLR: low is reset);
 `MODULE_AUTHOR` is no longer NVIDIA's boilerplate.
+
+### First light
+
+Verified on the devkit with StarlightEye on cam1 (J21, the 4-lane connector) and
+the CEF168 on the I2C header, R39.2.1, `imx585-console-image`:
+
+- The sensor probes at 9-001a, the TMP117 at 9-0048, and tegra-capture-vi binds
+  the sensor and the CEF168 (`cef168 0-000d`, a Lens sub-device) into one media
+  graph. The nvcsi "Failed to create device link (0x180)" line at boot is
+  cosmetic; NVIDIA's own sensors behind the cam_i2cmux print it too.
+- NVCSI configures PP 2 / port C, PHY 1, 4 lanes, D-PHY at 720 MHz, matching the
+  overlay, with no CSI errors in the RTCPU trace.
+- `v4l2-ctl --stream-mmap` runs at a measured 50.00 fps in the 4K mode.
+- The data is linear. A lens-cap frame reads 202.8 ± 0.69 on all four Bayer
+  channels, which is the sensor's default black level (50 in 10-bit units) at 12
+  bits, with no per-channel offset, gain or clipping.
+
+Two findings from those frames that every consumer has to know:
+
+**Sample layout.** VI writes RAW12 into 16-bit words left-aligned: the 12-bit
+value is in bits 15..4 and the low nibble is always zero. Shift right by 4 for the
+12-bit value, or treat black as 3243 and full scale as 65520 in the 16-bit domain.
+
+**Stride.** The VI writes memory in 64-byte atoms, and this kernel's
+`TEGRA_STRIDE_ALIGNMENT` is 1, so it programs whatever `bytesperline` the format
+carries. 3856 x 2 = 7712 bytes is 32 short of a multiple of 64, and with that
+stride every odd line starts half an atom off and loses its last 16 pixels, which
+arrive as zeros. The stride must be rounded up to a multiple of 64 by the
+application: for this mode `bytesperline = 7744`, i.e. 3872 words per line of
+which 3856 are image and 16 are zero padding. With v4l2-ctl that is
+`--set-fmt-video=width=3856,height=2180,pixelformat=RG12,bytesperline=7744`, and
+the frame is then 16,881,920 bytes. The channel driver also exposes this as the
+`preferred_stride` control. Raising HMAX does nothing for it; the sensor is not
+involved.
+
+Two driver defects surfaced in the same session and are fixed:
+`imx585_apply_frame_rate()` divided by `HMAX * micro-fps` with `div_u64()`, whose
+divisor is 32-bit, so 50 fps requests produced VMAX 25296 (4.45 fps) instead of
+2250; it and the exposure conversion now use `div64_u64()`. And tegracam creates
+gain, exposure and frame_rate with a default of 0, clamps them to the mode minimum
+when it narrows the ranges at stream start, and never pushes those three into the
+sensor, so the controls reported the minimums while the sensor ran the DT
+defaults cached in `priv`. `imx585_seed_controls()` writes the defaults into the
+controls at probe so the two agree.
 
 ### The hardware is StarlightEye, not a Kurokesu module
 

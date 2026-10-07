@@ -8,7 +8,7 @@ SSH_USER ?= "orin"
 SSH_USER_UID ?= "1000"
 SSH_USER_AUTHORIZED_KEY ?= ""
 
-EXTRA_USERS_PARAMS += "useradd -m -U -u ${SSH_USER_UID} -s /bin/sh -p '*' ${SSH_USER};"
+EXTRA_USERS_PARAMS += "useradd -m -U -G video -u ${SSH_USER_UID} -s /bin/sh -p '*' ${SSH_USER};"
 
 install_ssh_key_for_user () {
     if [ -z "${SSH_USER_AUTHORIZED_KEY}" ]; then
@@ -25,3 +25,15 @@ EOF2
 }
 
 ROOTFS_POSTPROCESS_COMMAND += "install_ssh_key_for_user; "
+
+# The SSH user is key-only, so sudo cannot ask for a password; the key is the
+# credential. Drop-in rather than editing sudoers: sudo's stock sudoers has
+# @includedir /etc/sudoers.d.
+IMAGE_INSTALL:append = " sudo"
+
+install_sudoers_for_user () {
+    install -d -m 0750 ${IMAGE_ROOTFS}${sysconfdir}/sudoers.d
+    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "${SSH_USER}" > ${IMAGE_ROOTFS}${sysconfdir}/sudoers.d/${SSH_USER}
+    chmod 0440 ${IMAGE_ROOTFS}${sysconfdir}/sudoers.d/${SSH_USER}
+}
+ROOTFS_POSTPROCESS_COMMAND += "install_sudoers_for_user; "
