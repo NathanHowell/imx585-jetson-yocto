@@ -10,7 +10,6 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/of_graph.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -71,14 +70,13 @@
 #define IMX585_REG_FDG_SEL0             CCI_REG8(0x3030)
 #define IMX585_BLKLEVEL_DEFAULT         50
 
-#define IMX585_REG_MODEL_ID_MSB         CCI_REG8(0x0016)
-#define IMX585_REG_MODEL_ID_LSB         CCI_REG8(0x0017)
-
 #define IMX585_VMAX_DEFAULT             2250
 #define IMX585_VMAX_MAX                 0xfffff
 #define IMX585_HMAX_MAX                 0xffff
 #define IMX585_SHR_MIN                  8
 #define IMX585_SHR_MIN_HDR              10
+/* Shortest integration in lines; will127534's IMX585_EXPOSURE_MIN. */
+#define IMX585_EXPOSURE_MIN             2
 #define IMX585_PIXEL_RATE               74250000U
 
 /* Native array */
@@ -152,10 +150,13 @@ static const struct imx585_inck_cfg imx585_inck_table[] = {
  * --------------------------------------------------------------------------
  */
 
+/* One entry per `mode` node in the sensor's device tree, in the same order:
+ * tegracam indexes sensor_modes[] by the frmfmt entry's mode number, so index i
+ * here must describe the DT's mode<i>. imx585_populate_sensor_mode_props()
+ * refuses to probe if the two disagree. */
 struct imx585_mode {
 	u32 width;
 	u32 height;
-	u8 hmax_div;
 	u32 default_vmax;
 	const struct cci_reg_sequence *reg_list;
 	u32 reg_list_length;
@@ -380,46 +381,28 @@ static const struct cci_reg_sequence imx585_mode_4k_regs[] = {
 	{ CCI_REG8(0x30d5), 0x04 },
 };
 
-static const struct cci_reg_sequence imx585_mode_fhd_regs[] = {
-	{ CCI_REG8(0x301b), 0x01 },
-	{ CCI_REG8(0x3022), 0x02 },
-	{ CCI_REG8(0x3023), 0x01 },
-	{ CCI_REG8(0x30d5), 0x02 },
-};
-
+/* Full-frame 4K only. will127534's binned 1928x1090 mode (0x301b = 0x01,
+ * 0x30d5 = 0x02) is not offered until the overlay carries a mode1 for it and
+ * imx585_min_hmax_4lane_4k[] gains a binned row -- the table above is for 4K
+ * readout and a binned mode reads out faster than it claims. */
 static const struct imx585_mode imx585_modes[] = {
-	{
-		.width = 1928,
-		.height = 1090,
-		.hmax_div = 1,
-		.default_vmax = IMX585_VMAX_DEFAULT,
-		.reg_list = imx585_mode_fhd_regs,
-		.reg_list_length = ARRAY_SIZE(imx585_mode_fhd_regs),
-	},
 	{
 		.width = 3856,
 		.height = 2180,
-		.hmax_div = 1,
 		.default_vmax = IMX585_VMAX_DEFAULT,
 		.reg_list = imx585_mode_4k_regs,
 		.reg_list_length = ARRAY_SIZE(imx585_mode_4k_regs),
 	},
 };
 
-/* 50 fps, not 60. At our 720 MHz link frequency the 4-lane line rate is
- * 74.25 MHz / HMAX = 74250000 / 660 = 112500 lines/s, and with VMAX 2250 that is
- * exactly 50.0 fps -- the same number imx585_populate_sensor_mode_props() now
- * derives. 60 fps would need ~1782 Mbps/lane, above the 1440 Mbps the DT selects.
- *
- * Both modes share this because both carry hmax_div = 1, so imx585_get_min_hmax()
- * returns the same HMAX for each. The binned 1928x1090 mode can in principle read
- * out faster; the min-HMAX table does not model that, so it is not claimed here.
- */
+/* 50 fps: at a 720 MHz link the 4-lane line rate is 74.25 MHz / HMAX =
+ * 74250000 / 660 = 112500 lines/s, and with VMAX 2250 that is exactly 50.0 fps,
+ * the same number imx585_populate_sensor_mode_props() derives. 60 fps would need
+ * ~1782 Mbps/lane, above the 1440 Mbps the DT selects. */
 static const int imx585_50fps[] = { 50 };
 
 static const struct camera_common_frmfmt imx585_frmfmt[] = {
-	{{1928, 1090}, imx585_50fps, 1, 0, 0},
-	{{3856, 2180}, imx585_50fps, 1, 0, 1},
+	{{3856, 2180}, imx585_50fps, 1, 0, 0},
 };
 
 /* --------------------------------------------------------------------------
@@ -453,6 +436,17 @@ struct imx585 {
 	u32 hmax;
 	u32 vmax;
 
+	/* Last requested control values, in the units the mode advertises
+	 * (dB*10, microseconds, micro-fps). tegracam only forwards a control write
+	 * while the sensor is powered, and only re-applies the current values at
+	 * stream start when the VI channel's override_enable control is on, which
+	 * it is not by default. So the driver keeps its own copy and writes all
+	 * three itself in imx585_start_streaming(), after the mode tables have
+	 * reset VMAX. */
+	s64 gain;
+	s64 exposure_us;
+	s64 frame_rate;
+
 	bool clear_hdr;
 
 	/* Sub-notifier for the lens-focus actuator, NULL when none is described.
@@ -465,7 +459,7 @@ struct imx585 {
 static const struct regmap_config imx585_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_NONE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -492,10 +486,22 @@ static inline u32 imx585_get_min_hmax(const struct imx585 *priv,
 	u32 base = imx585_min_hmax_4lane_4k[priv->link_freq_idx];
 	u32 scale = (priv->lane_count == 2) ? 2 : 1;
 	/* ClearHDR reads the pixel array twice per frame, so the line period
-	 * doubles -- as does VMAX, applied in populate_sensor_mode_props(). */
+	 * doubles -- as does VMAX, see imx585_get_min_vmax(). */
 	u32 hdr_scale = priv->clear_hdr ? 2 : 1;
 
-	return (base * scale * hdr_scale) / mode->hmax_div;
+	return base * scale * hdr_scale;
+}
+
+/* VMAX at the mode's maximum frame rate: the floor for frame-rate requests. */
+static inline u32 imx585_get_min_vmax(const struct imx585 *priv,
+				       const struct imx585_mode *mode)
+{
+	return mode->default_vmax * (priv->clear_hdr ? 2 : 1);
+}
+
+static inline u32 imx585_get_min_shr(const struct imx585 *priv)
+{
+	return priv->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
 }
 
 static int imx585_write_table(struct imx585 *priv,
@@ -519,10 +525,12 @@ static int imx585_power_on(struct camera_common_data *s_data)
 	if (err)
 		goto disable_regulators;
 
+	/* Pulse XCLR. The DT marks the line active-low, so asserting the reset
+	 * drives CAM_EN low and releasing it drives CAM_EN high. */
 	if (priv->reset_gpio) {
-		gpiod_set_value_cansleep(priv->reset_gpio, 0);
-		usleep_range(2000, 5000);
 		gpiod_set_value_cansleep(priv->reset_gpio, 1);
+		usleep_range(2000, 5000);
+		gpiod_set_value_cansleep(priv->reset_gpio, 0);
 	}
 
 	usleep_range(IMX585_STREAM_DELAY_US,
@@ -541,7 +549,7 @@ static int imx585_power_off(struct camera_common_data *s_data)
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
 
 	if (priv->reset_gpio)
-		gpiod_set_value_cansleep(priv->reset_gpio, 0);
+		gpiod_set_value_cansleep(priv->reset_gpio, 1);
 
 	clk_disable_unprepare(priv->xclk);
 	regulator_bulk_disable(IMX585_NUM_SUPPLIES, priv->supplies);
@@ -576,7 +584,8 @@ static int imx585_power_get(struct tegracam_device *tc_dev)
 	if (IS_ERR(priv->xclk))
 		return PTR_ERR(priv->xclk);
 
-	priv->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+	/* Held in reset until power_on() releases it. */
+	priv->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(priv->reset_gpio))
 		return PTR_ERR(priv->reset_gpio);
 
@@ -601,12 +610,9 @@ static struct camera_common_pdata *imx585_parse_dt(struct tegracam_device *tc_de
 	if (!pdata)
 		return NULL;
 
+	/* Only the clock name goes through pdata. Supplies and the reset line are
+	 * taken directly in imx585_power_get(). */
 	of_property_read_string(np, "mclk", &pdata->mclk_name);
-	of_property_read_string(np, "avdd-reg", &pdata->regulators.avdd);
-	of_property_read_string(np, "dvdd-reg", &pdata->regulators.dvdd);
-	of_property_read_string(np, "iovdd-reg", &pdata->regulators.iovdd);
-
-	pdata->reset_gpio = of_get_named_gpio(np, "reset-gpios", 0);
 
 	return pdata;
 }
@@ -667,30 +673,34 @@ static void imx585_update_timing(struct imx585 *priv,
 	priv->vmax = mode->default_vmax;
 }
 
-static void imx585_populate_sensor_mode_props(struct imx585 *priv)
+static int imx585_populate_sensor_mode_props(struct imx585 *priv)
 {
 	struct camera_common_data *s_data = priv->s_data;
 	struct sensor_properties *props = &s_data->sensor_props;
+	struct device *dev = priv->dev;
 	/* RAW12 normally; ClearHDR emits companded 16-bit. */
 	const u32 bpp = priv->clear_hdr ? 16 : 12;
-	u32 num_modes;
 	u32 i;
 
-	if (!props->sensor_modes)
-		return;
+	/* The DT's mode list and imx585_modes[] must agree index for index:
+	 * camera_common selects s_data->mode from the frmfmt table and tegracam
+	 * then indexes sensor_modes[] with it, so a mismatch either overwrites the
+	 * DT's geometry with another mode's or reads past the array. */
+	if (!props->sensor_modes ||
+	    props->num_modes != ARRAY_SIZE(imx585_modes)) {
+		dev_err(dev, "device tree describes %u modes, driver has %zu\n",
+			props->sensor_modes ? props->num_modes : 0,
+			ARRAY_SIZE(imx585_modes));
+		return -EINVAL;
+	}
 
-	num_modes = min(props->num_modes, (u32)ARRAY_SIZE(imx585_modes));
-
-	for (i = 0; i < num_modes; i++) {
+	for (i = 0; i < ARRAY_SIZE(imx585_modes); i++) {
 		struct sensor_mode_properties *dst = &props->sensor_modes[i];
 		const struct imx585_mode *src = &imx585_modes[i];
 		u32 hmax = imx585_get_min_hmax(priv, src);
 		u64 link_freq = imx585_link_freq_table[priv->link_freq_idx];
 		u64 pixel_clock = div_u64(link_freq * 2ULL * priv->lane_count, bpp);
-		/* VMAX doubles in ClearHDR, matching the HMAX doubling in
-		 * imx585_get_min_hmax(). */
-		u64 frame_length = (u64)src->default_vmax *
-				   (priv->clear_hdr ? 2 : 1);
+		u64 frame_length = imx585_get_min_vmax(priv, src);
 		u64 frame_time_us;
 		u64 min_exp_us;
 		u64 max_exp_us;
@@ -698,8 +708,17 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		u64 max_fps_q6;
 		u64 line_length;
 
+		if (dst->image_properties.width != src->width ||
+		    dst->image_properties.height != src->height) {
+			dev_err(dev, "mode%u is %ux%u in the device tree, %ux%u in the driver\n",
+				i, dst->image_properties.width,
+				dst->image_properties.height,
+				src->width, src->height);
+			return -EINVAL;
+		}
+
 		if (!hmax || !frame_length)
-			continue;
+			return -EINVAL;
 
 		/* HMAX is expressed in IMX585_PIXEL_RATE (74.25 MHz) clock ticks,
 		 * NOT in CSI pixel-clock ticks, so the line rate is
@@ -792,6 +811,8 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		dst->control_properties.is_interlaced = 0;
 		dst->control_properties.interlace_type = 0;
 	}
+
+	return 0;
 }
 
 static int imx585_mode_init(struct imx585 *priv,
@@ -841,20 +862,108 @@ static int imx585_mode_init(struct imx585 *priv,
 			  IMX585_BLKLEVEL_DEFAULT, NULL);
 }
 
+/* Records the mode; the registers are written by imx585_start_streaming().
+ * tegracam calls set_mode, then (optionally) the control overrides, then
+ * start_streaming, and the mode tables reset VMAX, so writing them here as well
+ * would both double every register write and undo a frame rate set in between. */
 static int imx585_set_mode(struct tegracam_device *tc_dev)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
 	struct camera_common_data *s_data = tc_dev->s_data;
-	u32 mode_idx;
 
 	if (s_data->mode < 0 || s_data->mode >= ARRAY_SIZE(imx585_modes))
 		return -EINVAL;
 
-	mode_idx = s_data->mode;
+	mutex_lock(&priv->lock);
+	imx585_update_timing(priv, &imx585_modes[s_data->mode]);
+	mutex_unlock(&priv->lock);
 
-	imx585_update_timing(priv, &imx585_modes[mode_idx]);
+	return 0;
+}
 
-	return imx585_mode_init(priv, &imx585_modes[mode_idx]);
+/* --------------------------------------------------------------------------
+ * Controls. The imx585_apply_*() helpers write the cached value to the sensor
+ * and expect priv->lock held; the set_*() callbacks cache and apply.
+ * --------------------------------------------------------------------------
+ */
+
+static int imx585_apply_gain(struct imx585 *priv)
+{
+	const u32 gain_max = priv->clear_hdr ? IMX585_ANALOG_GAIN_MAX_HDR
+					     : IMX585_ANALOG_GAIN_MAX;
+	u32 gain;
+
+	/* priv->gain is dB * 10 (gain_factor 10) and the register takes 0.3 dB
+	 * steps, hence /3. Above the analog ceiling the sensor applies digital
+	 * gain, which a linear-raw pipeline does not want happening silently. */
+	gain = div_u64((u64)clamp_t(s64, priv->gain, 0, (s64)gain_max * 3), 3);
+
+	dev_dbg(priv->dev, "gain %lld (dB*10) -> reg %u\n", priv->gain, gain);
+
+	return cci_write(priv->regmap, IMX585_REG_ANALOG_GAIN, gain, NULL);
+}
+
+/* Exposure is VMAX - SHR in lines, and a line is HMAX ticks of the 74.25 MHz
+ * clock, so microseconds convert at IMX585_PIXEL_RATE / (HMAX * 1e6). */
+static int imx585_apply_exposure(struct imx585 *priv)
+{
+	const u32 shr_min = imx585_get_min_shr(priv);
+	u32 lines;
+	u32 shr;
+
+	lines = div_u64((u64)priv->exposure_us * IMX585_PIXEL_RATE,
+			(u64)priv->hmax * 1000000ULL);
+	lines = clamp(lines, (u32)IMX585_EXPOSURE_MIN, priv->vmax - shr_min);
+
+	/* SHR is kept even, as will127534's driver does. */
+	shr = (priv->vmax - lines) & ~1U;
+	if (shr < shr_min)
+		shr = shr_min;
+
+	dev_dbg(priv->dev, "exposure %lld us -> %u lines, SHR %u (VMAX %u)\n",
+		priv->exposure_us, lines, shr, priv->vmax);
+
+	return cci_write(priv->regmap, IMX585_REG_SHR, shr, NULL);
+}
+
+/* Frame rate is set through VMAX: fps = IMX585_PIXEL_RATE / (HMAX * VMAX). The
+ * floor is the mode's default VMAX, which is its maximum frame rate. */
+static int imx585_apply_frame_rate(struct imx585 *priv)
+{
+	const struct imx585_mode *mode = &imx585_modes[priv->s_data->mode];
+	u32 vmax;
+
+	if (priv->frame_rate <= 0)
+		return -EINVAL;
+
+	vmax = div_u64(IMX585_PIXEL_RATE * 1000000ULL,
+		       (u64)priv->hmax * priv->frame_rate);
+	vmax = clamp(vmax, imx585_get_min_vmax(priv, mode),
+		     (u32)IMX585_VMAX_MAX);
+	vmax &= ~1U;
+
+	dev_dbg(priv->dev, "frame rate %lld ufps -> VMAX %u\n",
+		priv->frame_rate, vmax);
+
+	priv->vmax = vmax;
+
+	return cci_write(priv->regmap, IMX585_REG_VMAX, vmax, NULL);
+}
+
+/* VMAX first, since exposure is expressed relative to it. */
+static int imx585_apply_controls(struct imx585 *priv)
+{
+	int err;
+
+	err = imx585_apply_gain(priv);
+	if (err)
+		return err;
+
+	err = imx585_apply_frame_rate(priv);
+	if (err)
+		return err;
+
+	return imx585_apply_exposure(priv);
 }
 
 static int imx585_start_streaming(struct tegracam_device *tc_dev)
@@ -881,6 +990,12 @@ static int imx585_start_streaming(struct tegracam_device *tc_dev)
 		goto unlock;
 
 	err = cci_write(priv->regmap, IMX585_REG_DIGITAL_CLAMP, 0x00, NULL);
+	if (err)
+		goto unlock;
+
+	/* The mode tables have just reset VMAX; put the requested gain, frame
+	 * rate and exposure back before the sensor starts. */
+	err = imx585_apply_controls(priv);
 	if (err)
 		goto unlock;
 
@@ -932,69 +1047,49 @@ static int imx585_stop_streaming(struct tegracam_device *tc_dev)
 static int imx585_set_gain(struct tegracam_device *tc_dev, s64 val)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
-	struct camera_common_data *s_data = tc_dev->s_data;
-	const struct sensor_mode_properties *mode =
-		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
-	const u32 gain_max = priv->clear_hdr ? IMX585_ANALOG_GAIN_MAX_HDR
-					     : IMX585_ANALOG_GAIN_MAX;
-	u32 gain;
+	int err;
 
-	/* val arrives in the units the mode advertises: dB * gain_factor, with
-	 * gain_factor 10. The register takes 0.3 dB steps, hence /3. Clamp to the
-	 * advertised range first, then to the hardware ceiling -- above it the
-	 * sensor applies digital gain, which a linear-raw pipeline does not want
-	 * happening silently. */
-	val = clamp_t(s64, val, mode->control_properties.min_gain_val,
-		      mode->control_properties.max_gain_val);
+	mutex_lock(&priv->lock);
+	priv->gain = val;
+	err = imx585_apply_gain(priv);
+	mutex_unlock(&priv->lock);
 
-	gain = div_u64((u64)val, 3);
-	if (gain > gain_max)
-		gain = gain_max;
-
-	dev_dbg(priv->dev, "%s: %lld (dB*10) -> gain reg %u\n", __func__, val,
-		gain);
-
-	return cci_write(priv->regmap, IMX585_REG_ANALOG_GAIN, gain, NULL);
+	return err;
 }
 
+/* A new VMAX changes what the current SHR means, so exposure is re-applied. */
 static int imx585_set_frame_rate(struct tegracam_device *tc_dev, s64 val)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
-	struct camera_common_data *s_data = tc_dev->s_data;
-	const struct sensor_mode_properties *mode =
-		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
-	u64 pixel_clock = mode->signal_properties.pixel_clock.val;
-	u32 line_length = mode->image_properties.line_length;
-	u32 factor = mode->control_properties.framerate_factor;
-	u32 frame_length;
+	int err;
 
-	if (!val || !pixel_clock || !line_length)
+	if (val <= 0)
 		return -EINVAL;
 
-	frame_length = div_u64(pixel_clock * factor,
-				 (u64)line_length * val);
-	frame_length = clamp(frame_length,
-			      (u32)mode->control_properties.min_framerate,
-			      IMX585_VMAX_MAX);
+	mutex_lock(&priv->lock);
+	priv->frame_rate = val;
+	err = imx585_apply_frame_rate(priv);
+	if (!err)
+		err = imx585_apply_exposure(priv);
+	mutex_unlock(&priv->lock);
 
-	priv->vmax = frame_length;
-
-	return cci_write(priv->regmap, IMX585_REG_VMAX, priv->vmax, NULL);
+	return err;
 }
 
 static int imx585_set_exposure(struct tegracam_device *tc_dev, s64 val)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
-	u32 shr_min = priv->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
-	u32 shr;
+	int err;
 
 	if (val <= 0)
 		return -EINVAL;
 
-	shr = priv->vmax - val;
-	shr = clamp(shr, shr_min, IMX585_VMAX_MAX);
+	mutex_lock(&priv->lock);
+	priv->exposure_us = val;
+	err = imx585_apply_exposure(priv);
+	mutex_unlock(&priv->lock);
 
-	return cci_write(priv->regmap, IMX585_REG_SHR, shr, NULL);
+	return err;
 }
 
 static int imx585_set_group_hold(struct tegracam_device *tc_dev, bool val)
@@ -1108,11 +1203,17 @@ static int imx585_register_lens_notifier(struct imx585 *priv)
 	return 0;
 }
 
+/* Presence check. The IMX585 has no model-ID register (its map starts at
+ * 0x3000, and neither reference driver identifies the part), so this reads
+ * MODE_SELECT after the reset pulse and expects its reset value, STANDBY. That
+ * proves the sensor answers at this address through the level shifter and that
+ * XCLR actually reset it, which is what a wrong mux leg or a dead CAM_EN would
+ * otherwise only show as "no frames" later. */
 static int imx585_board_setup(struct imx585 *priv)
 {
 	struct camera_common_data *s_data = priv->s_data;
 	struct device *dev = priv->dev;
-	u64 id_high, id_low;
+	u64 mode;
 	int err;
 
 	err = imx585_power_on(s_data);
@@ -1121,16 +1222,19 @@ static int imx585_board_setup(struct imx585 *priv)
 		return err;
 	}
 
-	err = cci_read(priv->regmap, IMX585_REG_MODEL_ID_MSB, &id_high, NULL);
-	if (err)
+	err = cci_read(priv->regmap, IMX585_REG_MODE_SELECT, &mode, NULL);
+	if (err) {
+		dev_err(dev, "sensor does not answer at 0x%02x (%d)\n",
+			priv->client->addr, err);
 		goto power_off;
+	}
 
-	err = cci_read(priv->regmap, IMX585_REG_MODEL_ID_LSB, &id_low, NULL);
-	if (err)
+	if (mode != IMX585_MODE_STANDBY) {
+		dev_err(dev, "MODE_SELECT reads 0x%02llx after reset, expected 0x%02x\n",
+			mode, IMX585_MODE_STANDBY);
+		err = -ENODEV;
 		goto power_off;
-
-	dev_dbg(priv->dev, "IMX585 detected id 0x%02llx%02llx\n",
-		id_high & 0xff, id_low & 0xff);
+	}
 
 	err = imx585_power_off(s_data);
 	if (err)
@@ -1223,7 +1327,20 @@ static int imx585_probe(struct i2c_client *client)
 		goto unregister;
 	}
 
-	imx585_populate_sensor_mode_props(priv);
+	err = imx585_populate_sensor_mode_props(priv);
+	if (err)
+		goto unregister;
+
+	/* Start from mode 0's advertised defaults, so the first stream after
+	 * probe has a defined gain, exposure and frame rate even when userspace
+	 * sets none. */
+	imx585_update_timing(priv, &imx585_modes[0]);
+	priv->gain = priv->s_data->sensor_props.sensor_modes[0]
+			.control_properties.default_gain;
+	priv->exposure_us = priv->s_data->sensor_props.sensor_modes[0]
+			.control_properties.default_exp_time.val;
+	priv->frame_rate = priv->s_data->sensor_props.sensor_modes[0]
+			.control_properties.default_framerate;
 
 	err = imx585_init_inck_sel(priv);
 	if (err) {
@@ -1316,5 +1433,5 @@ static struct i2c_driver imx585_i2c_driver = {
 module_i2c_driver(imx585_i2c_driver);
 
 MODULE_DESCRIPTION("Tegra tegracam driver for Sony IMX585");
-MODULE_AUTHOR("NVIDIA Corporation");
+MODULE_AUTHOR("Nathan Howell <nathanhowell@hotmail.com>");
 MODULE_LICENSE("GPL");

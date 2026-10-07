@@ -315,10 +315,15 @@
 						#address-cells = <1>;
 						#size-cells = <0>;
 
-						/* -------- cam1: the StarlightEye -------- */
+						/* cam1 = serial_c, the 4-lane connector: the StarlightEye. */
 						imx585_c: imx585_c@1a {
-							status = "okay"; /* cam1 = serial_c, the 4-lane connector -- StarlightEye goes here */
-							reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_HIGH>;
+							status = "okay";
+							/* CAM1_PWDN is the carrier's CAM_EN line, which
+							 * StarlightEye wires to the sensor's XCLR: high runs,
+							 * low holds the sensor in reset. Declaring it active-low
+							 * lets the driver say "assert reset" and have the pin
+							 * go low, which is the conventional reset-gpios sense. */
+							reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_LOW>;
 							/* The standard V4L2 association between a sensor and its
 							 * focus actuator. The driver resolves this phandle and
 							 * registers a sub-notifier for it, which is what gets the
