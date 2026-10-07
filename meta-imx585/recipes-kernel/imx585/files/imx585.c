@@ -54,6 +54,14 @@
 #define IMX585_REG_BLACK_LEVEL          CCI_REG16_LE(0x30dc)
 #define IMX585_REG_DIGITAL_CLAMP        CCI_REG8(0x3458)
 #define IMX585_REG_ANALOG_GAIN          CCI_REG16_LE(0x306c)
+/* Analog gain is 0.3 dB per step, 0..240 == 0..72 dB. Past 240 the sensor moves
+ * into digital gain, which is not what a linear-raw pipeline wants applied
+ * silently, so set_gain() clamps here. */
+#define IMX585_ANALOG_GAIN_MAX          240
+/* Group hold: writing 1 defers exposure/gain register updates until it is
+ * cleared, so a frame cannot be captured with exposure from one setting and gain
+ * from the next. */
+#define IMX585_REG_REGHOLD              CCI_REG8(0x3001)
 #define IMX585_REG_FDG_SEL0             CCI_REG8(0x3030)
 #define IMX585_BLKLEVEL_DEFAULT         50
 
@@ -396,11 +404,20 @@ static const struct imx585_mode imx585_modes[] = {
 	},
 };
 
-static const int imx585_60fps[] = { 60 };
+/* 50 fps, not 60. At our 720 MHz link frequency the 4-lane line rate is
+ * 74.25 MHz / HMAX = 74250000 / 660 = 112500 lines/s, and with VMAX 2250 that is
+ * exactly 50.0 fps -- the same number imx585_populate_sensor_mode_props() now
+ * derives. 60 fps would need ~1782 Mbps/lane, above the 1440 Mbps the DT selects.
+ *
+ * Both modes share this because both carry hmax_div = 1, so imx585_get_min_hmax()
+ * returns the same HMAX for each. The binned 1928x1090 mode can in principle read
+ * out faster; the min-HMAX table does not model that, so it is not claimed here.
+ */
+static const int imx585_50fps[] = { 50 };
 
 static const struct camera_common_frmfmt imx585_frmfmt[] = {
-	{{1928, 1090}, imx585_60fps, 1, 0, 0},
-	{{3856, 2180}, imx585_60fps, 1, 0, 1},
+	{{1928, 1090}, imx585_50fps, 1, 0, 0},
+	{{3856, 2180}, imx585_50fps, 1, 0, 1},
 };
 
 /* --------------------------------------------------------------------------
@@ -645,7 +662,9 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 {
 	struct camera_common_data *s_data = priv->s_data;
 	struct sensor_properties *props = &s_data->sensor_props;
-	const u32 bpp = 10;
+	/* The sensor is RAW12. This was 10, a placeholder migrated out of the DT,
+	 * and it made the advertised pixel_clock 20% too high. */
+	const u32 bpp = 12;
 	u32 num_modes;
 	u32 i;
 
@@ -666,64 +685,94 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		u64 max_exp_us;
 		u64 default_exp_us;
 		u64 max_fps_q6;
+		u64 line_length;
 
-	if (!pixel_clock)
-		pixel_clock = IMX585_PIXEL_RATE;
+		if (!hmax || !frame_length)
+			continue;
 
-	frame_time_us = div_u64((u64)hmax * frame_length * 1000000ULL,
-				pixel_clock ? pixel_clock : 1);
-	if (!frame_time_us)
-		frame_time_us = 16666; /* ~60 fps */
+		/* HMAX is expressed in IMX585_PIXEL_RATE (74.25 MHz) clock ticks,
+		 * NOT in CSI pixel-clock ticks, so the line rate is
+		 *
+		 *     lines/s = IMX585_PIXEL_RATE / HMAX
+		 *
+		 * This is how will127534's driver derives it
+		 * (pixel_rate = width * IMX585_PIXEL_RATE / min_hmax), and it is
+		 * confirmed by Kurokesu's working Jetson DT: their 360 MHz-link
+		 * mode pairs pix_clk_hz = 237600000 with line_length = 4224, and
+		 * 237600000 / 4224 == 74250000 / 1320 == 56250 lines/s, where 1320
+		 * is will's min HMAX at that link frequency.
+		 *
+		 * Everything below previously divided by pixel_clock instead, which
+		 * inflated every derived timing by pixel_clock / 74.25 MHz -- a
+		 * factor of 6.46 at our 720 MHz link. It advertised ~323 fps and a
+		 * 3 ms frame time for a mode that actually runs at 50 fps.
+		 */
+		frame_time_us = div_u64((u64)hmax * frame_length * 1000000ULL,
+					IMX585_PIXEL_RATE);
+		min_exp_us = div_u64((u64)IMX585_SHR_MIN * hmax * 1000000ULL,
+				     IMX585_PIXEL_RATE);
+		if (!min_exp_us)
+			min_exp_us = 1;
+		max_exp_us = max(frame_time_us - min_exp_us, min_exp_us + 1);
+		default_exp_us = clamp_t(u64, frame_time_us / 2,
+					 min_exp_us, max_exp_us);
 
-	min_exp_us = div_u64((u64)IMX585_SHR_MIN * hmax * 1000000ULL,
-			pixel_clock ? pixel_clock : 1);
-	if (!min_exp_us)
-		min_exp_us = 10;
+		/* framerate_factor is 1000000, so this is micro-fps. At 720 MHz /
+		 * 4 lanes this comes out exactly 50000000 (50.0 fps). */
+		max_fps_q6 = div_u64(IMX585_PIXEL_RATE * 1000000ULL,
+				     (u64)hmax * frame_length);
 
-	max_exp_us = max(frame_time_us - min_exp_us, min_exp_us + 1);
-	default_exp_us = clamp_t(u64, frame_time_us / 2,
-					min_exp_us, max_exp_us);
+		/* VI needs the line length in its own pixel-clock domain, so scale
+		 * HMAX from the 74.25 MHz domain into it. */
+		line_length = div_u64(pixel_clock * hmax, IMX585_PIXEL_RATE);
 
-	max_fps_q6 = div_u64(pixel_clock * 1000000ULL,
-				(u64)hmax * frame_length);
-	if (!max_fps_q6)
-		max_fps_q6 = 60000000ULL;
+		dst->signal_properties.num_lanes = priv->lane_count;
+		dst->signal_properties.mclk_freq = IMX585_MCLK_FREQ;
+		dst->signal_properties.pixel_clock.val = pixel_clock;
+		dst->signal_properties.cil_settletime = 0;
+		dst->signal_properties.discontinuous_clk = 0;
+		dst->signal_properties.dpcm_enable = 0;
+		dst->signal_properties.phy_mode = CSI_PHY_MODE_DPHY;
 
-	dst->signal_properties.num_lanes = priv->lane_count;
-	dst->signal_properties.mclk_freq = IMX585_MCLK_FREQ;
-	dst->signal_properties.pixel_clock.val = pixel_clock;
-	dst->signal_properties.cil_settletime = 0;
-	dst->signal_properties.discontinuous_clk = 0;
-	dst->signal_properties.dpcm_enable = 0;
-	dst->signal_properties.phy_mode = CSI_PHY_MODE_DPHY;
+		dst->image_properties.width = src->width;
+		dst->image_properties.height = src->height;
+		dst->image_properties.line_length = line_length;
+		dst->image_properties.pixel_format = V4L2_PIX_FMT_SRGGB12;
+		/* imx585_common_regs writes 0x303a = 0x03, which disables embedded
+		 * data -- the pre-conversion driver carries that write with exactly
+		 * that comment, and Kurokesu's working Jetson DT likewise sets
+		 * embedded_metadata_height = "0". Promising VI two lines that the
+		 * sensor does not send makes it short-count every frame. */
+		dst->image_properties.embedded_metadata_height = 0;
 
-	dst->image_properties.width = src->width;
-	dst->image_properties.height = src->height;
-	dst->image_properties.line_length = hmax;
-		dst->image_properties.pixel_format = V4L2_PIX_FMT_SRGGB10;
-	dst->image_properties.embedded_metadata_height = 2;
-
-	dst->control_properties.gain_factor = 16;
-	dst->control_properties.framerate_factor = 1000000;
-	dst->control_properties.exposure_factor = 1000000;
-	dst->control_properties.inherent_gain = 1;
-	dst->control_properties.min_gain_val = 16;
-	dst->control_properties.max_gain_val = 512;
-	dst->control_properties.step_gain_val = 1;
-	dst->control_properties.default_gain = 16;
-	dst->control_properties.min_hdr_ratio = 1;
-	dst->control_properties.max_hdr_ratio = 1;
-	dst->control_properties.min_framerate = 1000000;
-	dst->control_properties.step_framerate = 1;
-	dst->control_properties.max_framerate = min_t(u32, max_fps_q6, U32_MAX);
-	dst->control_properties.default_framerate =
-		min_t(u32, max_fps_q6, U32_MAX);
-	dst->control_properties.min_exp_time.val = min_exp_us;
-	dst->control_properties.max_exp_time.val = max_exp_us;
-	dst->control_properties.step_exp_time.val = 1;
-	dst->control_properties.default_exp_time.val = default_exp_us;
-	dst->control_properties.is_interlaced = 0;
-	dst->control_properties.interlace_type = 0;
+		/* Gain is reported in decibels, matching the hardware: IMX585
+		 * analog gain is 0.3 dB per step over 0..240 (0..72 dB). With
+		 * gain_factor 10 the values here are dB*10, so step 3 == 0.3 dB and
+		 * max 720 == 72 dB. This replaces a linear Q4 scale
+		 * (gain_factor 16, 16..512) that imx585_set_gain() then wrote raw
+		 * into the register, which both mis-scaled the gain and ran off the
+		 * end of the analog range. Same shape as Kurokesu's working DT. */
+		dst->control_properties.gain_factor = 10;
+		dst->control_properties.framerate_factor = 1000000;
+		dst->control_properties.exposure_factor = 1000000;
+		dst->control_properties.inherent_gain = 1;
+		dst->control_properties.min_gain_val = 0;
+		dst->control_properties.max_gain_val = 720;
+		dst->control_properties.step_gain_val = 3;
+		dst->control_properties.default_gain = 0;
+		dst->control_properties.min_hdr_ratio = 1;
+		dst->control_properties.max_hdr_ratio = 1;
+		dst->control_properties.min_framerate = 1000000;
+		dst->control_properties.step_framerate = 1;
+		dst->control_properties.max_framerate = min_t(u64, max_fps_q6, U32_MAX);
+		dst->control_properties.default_framerate =
+			min_t(u64, max_fps_q6, U32_MAX);
+		dst->control_properties.min_exp_time.val = min_exp_us;
+		dst->control_properties.max_exp_time.val = max_exp_us;
+		dst->control_properties.step_exp_time.val = 1;
+		dst->control_properties.default_exp_time.val = default_exp_us;
+		dst->control_properties.is_interlaced = 0;
+		dst->control_properties.interlace_type = 0;
 	}
 }
 
@@ -865,8 +914,28 @@ static int imx585_stop_streaming(struct tegracam_device *tc_dev)
 static int imx585_set_gain(struct tegracam_device *tc_dev, s64 val)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
+	struct camera_common_data *s_data = tc_dev->s_data;
+	const struct sensor_mode_properties *mode =
+		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
+	u32 gain;
 
-	return cci_write(priv->regmap, IMX585_REG_ANALOG_GAIN, val, NULL);
+	/* val arrives in the units the mode advertises: dB * gain_factor, with
+	 * gain_factor 10. The register wants 0.3 dB steps, hence /3. Previously
+	 * val went into the register raw against a linear Q4 scale, so a
+	 * requested 1x wrote 16 (4.8 dB) and the top of the advertised range
+	 * wrote 512 -- more than double the analog maximum, landing in digital
+	 * gain. Clamp to the advertised range first, then to the hardware. */
+	val = clamp_t(s64, val, mode->control_properties.min_gain_val,
+		      mode->control_properties.max_gain_val);
+
+	gain = div_u64((u64)val, 3);
+	if (gain > IMX585_ANALOG_GAIN_MAX)
+		gain = IMX585_ANALOG_GAIN_MAX;
+
+	dev_dbg(priv->dev, "%s: %lld (dB*10) -> gain reg %u\n", __func__, val,
+		gain);
+
+	return cci_write(priv->regmap, IMX585_REG_ANALOG_GAIN, gain, NULL);
 }
 
 static int imx585_set_frame_rate(struct tegracam_device *tc_dev, s64 val)
@@ -911,7 +980,12 @@ static int imx585_set_exposure(struct tegracam_device *tc_dev, s64 val)
 
 static int imx585_set_group_hold(struct tegracam_device *tc_dev, bool val)
 {
-	return 0;
+	struct imx585 *priv = tegracam_to_imx585(tc_dev);
+
+	/* Was a stub returning 0, which told tegracam the hold had been taken
+	 * when nothing had, so exposure and gain could land either side of a
+	 * frame boundary. */
+	return cci_write(priv->regmap, IMX585_REG_REGHOLD, val ? 1 : 0, NULL);
 }
 
 static const u32 imx585_ctrl_cids[] = {
