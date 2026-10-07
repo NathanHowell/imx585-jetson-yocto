@@ -15,9 +15,8 @@ LIC_FILES_CHKSUM = "file://imx585-overlay.dts;beginline=1;endline=1;md5=fcab174c
 # overlay -- he wrote both the board and the driver -- and verified by compiling
 # with `dtc -@`:
 #
-#   - cam1 (imx585_c, serial_c, 4 lanes, lane_polarity 0) is the enabled sensor;
-#     cam0 is disabled, being 2-lane on the p3768 carrier. Both are set in the
-#     file itself: __overrides__ is RPi firmware and inert under UEFI/extlinux.
+#   - cam1 (imx585_c, serial_c, 4 lanes, lane_polarity 0) is the only sensor;
+#     cam0 on the p3768 carrier is 2-lane and is not described.
 #   - imx585_inck, a fixed-clock at 24 MHz, is U5 (SX2M24.000M20F30TNN) driving
 #     IMX585 pin F4/INCK. The host clocks nothing; the node states a rate. Safe
 #     because the driver only clk_get_rate()s and clk_prepare_enable()s it. The
