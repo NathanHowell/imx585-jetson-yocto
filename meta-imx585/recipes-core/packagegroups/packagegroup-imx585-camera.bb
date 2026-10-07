@@ -23,7 +23,6 @@ RDEPENDS:${PN} = " \
     kernel-module-imx585 \
     kernel-module-cef168 \
     imx585-overlay \
-    imx585-devicetree \
     nvidia-kernel-oot-base \
     nvidia-kernel-oot-cameras \
 "
