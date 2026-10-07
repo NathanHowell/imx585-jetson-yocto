@@ -1,0 +1,12 @@
+# Build imx585-minimal-image instead of the console image:
+#
+#   kas build kas/imx585.yml:kas/include/minimal.yml
+#
+# Headless, read-only rootfs, dropbear, no package management. The container
+# engine is whatever imx585.yml's includes selected (podman unless docker.yml is
+# stacked after this).
+header:
+  version: 14
+
+target:
+  - imx585-minimal-image

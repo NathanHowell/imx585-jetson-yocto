@@ -1,6 +1,5 @@
-# Minimal headless image with podman. This is the recommended container build:
-#
-#   kas build kas/imx585.yml:kas/include/podman.yml
+# podman, the container engine for both images. kas/imx585.yml includes this, so
+# the default build already has it; kas/include/docker.yml replaces it.
 #
 # podman only needs meta-virtualization. meta-tegra-community is NOT required --
 # nvidia-container-toolkit and libnvidia-container live in meta-tegra itself,
@@ -18,11 +17,10 @@ repos:
     url: https://git.yoctoproject.org/meta-virtualization
     branch: wrynose
 
-target:
-  - imx585-minimal-image
-
 local_conf_header:
-  podman: |
+  # Same key as docker.yml, so stacking docker.yml replaces this block instead of
+  # adding a second one after it.
+  container-engine: |
     # Sets VIRTUAL-RUNTIME_container_{engine,runtime,networking,dns} to
     # podman/crun/netavark/aardvark-dns. Must be a hard assignment: layer.conf
     # already set CONTAINER_PROFILE ?= "default", and the profile include is

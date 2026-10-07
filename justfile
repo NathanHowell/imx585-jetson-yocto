@@ -23,6 +23,10 @@ build target=image:
 build-fast target=image:
     kas/build.sh shell {{kas_yml}} -c "bitbake {{target}}"
 
+# bitbake imx585-minimal-image (read-only rootfs, dropbear), 4 threads
+build-minimal:
+    kas/build.sh shell {{kas_yml}}:kas/include/minimal.yml -c "bitbake -R {{justfile_directory()}}/kas/lowmem.conf imx585-minimal-image"
+
 # bitbake prompt in the kas environment
 shell:
     kas/build.sh shell {{kas_yml}}

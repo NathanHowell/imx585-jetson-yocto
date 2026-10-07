@@ -1,7 +1,7 @@
-SUMMARY = "Container runtime configuration for a read-only node"
+SUMMARY = "Container runtime configuration for the IMX585 images"
 DESCRIPTION = "Points podman's image store at the persistent data partition, \
 makes containers read-only by default, and regenerates the NVIDIA CDI spec into \
-/run at boot because /etc is not writable."
+/run at boot so it works whether or not /etc is writable."
 
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"

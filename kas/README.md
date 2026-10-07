@@ -32,10 +32,10 @@ meta-tegra-community only has an `nvidia-docker-tests` recipe.
 ```sh
 sudo apt install kas      # Debian 13 ships 4.8.1; no pipx needed
 
-kas/build.sh build kas/imx585.yml                                   # bring-up image
+kas/build.sh build kas/imx585.yml                                   # console image, podman
 kas/build.sh shell kas/imx585.yml                                   # bitbake prompt
-kas/build.sh build kas/imx585.yml:kas/include/podman.yml             # minimal + podman
-kas/build.sh build kas/imx585.yml:kas/include/docker.yml             # minimal + docker
+kas/build.sh build kas/imx585.yml:kas/include/minimal.yml            # minimal image, podman
+kas/build.sh build kas/imx585.yml:kas/include/docker.yml             # docker instead of podman
 kas/build.sh build kas/imx585.yml:kas/include/kernel-linux-yocto.yml # mainline 6.18
 ```
 
@@ -163,14 +163,15 @@ target.
 | `imx585.yml` | the build: distro, machine, target, `local.conf` |
 | `include/base.yml` | layer pins shared by all configs |
 | `include/kernel-linux-yocto.yml` | opt in to mainline linux-yocto 6.18 |
-| `include/podman.yml` | minimal image + podman (recommended engine) |
-| `include/docker.yml` | minimal image + docker instead |
+| `include/podman.yml` | meta-virtualization + podman; included by `imx585.yml` |
+| `include/minimal.yml` | build `imx585-minimal-image` instead of the console image |
+| `include/docker.yml` | docker instead of podman |
 
 ## Images
 
 | | |
 |---|---|
-| `imx585-console-image` | bring-up: openssh, rpm on target, `kernel-modules`, strace/trace-cmd/bpftrace |
+| `imx585-console-image` | bring-up: openssh, rpm on target, `kernel-modules`, strace/trace-cmd/bpftrace, plus the same podman + CUDA stack as the minimal image |
 | `imx585-minimal-image` | headless, read-only rootfs: `packagegroup-core-boot` + the camera + one container engine with CUDA and USB audio, container store on a separate data partition |
 
 `imx585-minimal-image` installs `packagegroup-core-boot` directly instead of
@@ -186,6 +187,7 @@ the minimal image has to name it explicitly — `packagegroup-imx585-camera` doe
 
 ## Container engine
 
+Both images install it, through `recipes-core/images/imx585-containers.inc`.
 podman, not docker. It is daemonless (one Go binary plus `crun` and `conmon`,
 both C) where docker is `dockerd` + `containerd` + `runc` + `docker-cli`, four Go
 binaries, and additionally RDEPENDS the full `util-linux` and `bridge-utils`.

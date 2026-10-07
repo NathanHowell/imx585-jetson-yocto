@@ -7,6 +7,7 @@ LICENSE = "MIT"
 inherit core-image
 
 require imx585-ssh-user.inc
+require imx585-containers.inc
 
 # IMAGE_INSTALL is set, not appended to CORE_IMAGE_BASE_INSTALL, on purpose.
 # CORE_IMAGE_BASE_INSTALL would add packagegroup-base-extended, which drags in
@@ -24,50 +25,12 @@ require imx585-ssh-user.inc
 IMAGE_INSTALL = " \
     packagegroup-core-boot \
     packagegroup-imx585-camera \
-    ${IMX585_CONTAINER_ENGINE} \
-    ${IMX585_CONTAINER_GPU} \
     ${IMX585_USB_AUDIO} \
     ${CORE_IMAGE_EXTRA_INSTALL} \
 "
 
-# Exactly one engine. podman (daemonless: podman + crun + conmon) is roughly
-# 80-120 MB smaller installed than docker (dockerd + containerd + runc +
-# docker-cli + bridge-utils + full util-linux). Override from local.conf or a kas
-# include to switch -- see kas/include/podman.yml and kas/include/docker.yml.
-#
-# These cannot both be installed: meta-virtualization's podman recipe has
-# PODMAN_FEATURES = "docker", which installs a ${bindir}/docker wrapper. Its
-# RCONFLICTS is keyed off PACKAGECONFIG rather than PODMAN_FEATURES, so the
-# conflict is not declared -- it surfaces as a file collision on /usr/bin/docker
-# at rootfs time instead. Set PODMAN_FEATURES = "" if you ever need both.
-IMX585_CONTAINER_ENGINE ?= "podman ca-certificates"
-
-# Either way, meta-virtualization has to be in bblayers for the engine to exist
-# as a recipe at all. kas/include/podman.yml and kas/include/docker.yml add it;
-# building this image without one of them fails on a missing provider.
-
-# CUDA inside containers. This is the expensive part of the image and it is not
-# optional here, because that is the stated requirement.
-#
-# nvidia-container-toolkit RDEPENDS libnvidia-container-tools, which RDEPENDS
-# tegra-libraries-cuda (libcuda, libnvidia-nvvm, libnvidia-ptxjitcompiler, which
-# in turn pull tegra-libraries-core), plus tegra-libraries-nvml and
-# tegra-container-passthrough. The weight is in tegra-libraries-cuda: four named
-# libraries out of the 137 MB nvidia-l4t-3d-core deb, plus libcuda.so.1.1 from
-# the 22 MB nvidia-l4t-cuda-nvgpu deb.
-#
-# tegra-container-passthrough is NOT the expensive one -- see kas/README.md. It
-# stages the L4T wayland, weston and gstreamer shared libraries under
-# ${datadir}/nvidia-container-passthrough to be bind-mounted into containers;
-# those three debs are 55 KB, 1.6 MB and 2.5 MB compressed. Nothing in the image
-# loads them and there is no gstreamer installation here to use them.
-#
-# nv-kernel-module-nvgpu is the Orin GPU driver and the one thing CUDA cannot
-# work without. tegra-libraries-cuda only RRECOMMENDS it, so name the package
-# that hard-depends on it. nvidia-kernel-oot-compute (as opposed to
-# -compute-nvgpu) is deliberately absent: that is nvidia-uvm, which belongs to
-# the open-RM/tegra264 path and would drag the display modules in behind it.
-IMX585_CONTAINER_GPU ?= "nvidia-container-toolkit nvidia-kernel-oot-compute-nvgpu"
+# The container engine and nvidia-container-toolkit come from
+# imx585-containers.inc, appended to IMAGE_INSTALL.
 
 # USB Audio Class device, to be passed into a container with
 # `--device /dev/snd`. snd-usb-audio autoloads from the USB modalias once udev
@@ -81,10 +44,8 @@ IMX585_USB_AUDIO ?= "kernel-module-snd-usb-audio"
 IMAGE_INSTALL:append = " util-linux-fstrim"
 
 # Read-only rootfs plumbing: the data.mount unit for the persistent partition,
-# journald held in RAM, dropbear host keys moved off /etc. imx585-container-config
-# adds podman's read-only default and regenerates the CDI spec into /run, since
-# /etc/cdi cannot be written at runtime.
-IMAGE_INSTALL:append = " imx585-node-config imx585-container-config"
+# journald held in RAM, dropbear host keys moved off /etc.
+IMAGE_INSTALL:append = " imx585-node-config"
 
 # Firmware TPM 2.0. OPTEE_ENABLE_FTPM in imx585.conf is what builds the fTPM and
 # its helper into OP-TEE as early TAs; these are the normal-world halves.

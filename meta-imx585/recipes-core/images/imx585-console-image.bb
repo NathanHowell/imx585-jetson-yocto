@@ -4,6 +4,7 @@ LICENSE = "MIT"
 inherit core-image
 
 require imx585-ssh-user.inc
+require imx585-containers.inc
 
 IMAGE_FEATURES += "ssh-server-openssh package-management"
 
@@ -19,8 +20,12 @@ IMAGE_INSTALL:append = " tegra-tools-tegrastats dtc nv-kernel-module-rtcpu-debug
 
 # Same storage layout as the minimal image: the persistent data partition is
 # created from the NVMe's free space on first boot and mounted at
-# IMX585_DATA_MOUNT, which is also where OP-TEE secure storage lives. The
-# dropbear drop-ins the package carries are inert here, as this image uses openssh.
+# IMX585_DATA_MOUNT, which is also where OP-TEE secure storage and the podman
+# image store live. The dropbear drop-ins the package carries are inert here, as
+# this image uses openssh.
+#
+# nvgpu, which CUDA containers need, is loaded here by nv-load-display-modules
+# from tegra-configs-display-driver, which packagegroup-base-extended brings in.
 IMAGE_INSTALL:append = " imx585-node-config"
 
 KERNEL_MODULE_AUTOLOAD:append = " imx585 cef168"

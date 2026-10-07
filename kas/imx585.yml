@@ -3,6 +3,9 @@
 #
 #   kas build kas/imx585.yml
 #
+# podman.yml brings meta-virtualization and selects podman, which both images
+# install (recipes-core/images/imx585-containers.inc).
+#
 # The kernel is NOT pinned here on purpose: linux-noble-nvidia-tegra is already
 # meta-tegra's PREFERRED_PROVIDER_virtual/kernel on wrynose, so taking the
 # default is what "NVIDIA supported kernel" means. See include/kernel-linux-yocto.yml
@@ -11,6 +14,7 @@ header:
   version: 14
   includes:
     - kas/include/base.yml
+    - kas/include/podman.yml
 
 distro: imx585
 machine: jetson-orin-nano-devkit-nvme
