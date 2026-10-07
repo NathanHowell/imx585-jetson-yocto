@@ -56,10 +56,8 @@ Three consequences, because this changes how decisions get made here:
   layer above them is ours. That is why restored blocks keep his line layout: so
   the tables can still be diffed against his when he changes them.
 - **We are free to restructure.** Nothing external constrains the shape of this
-  file, so the dropped mono/RAW16 support, the dead cam0 plumbing and the gain
-  unit handling can be fixed properly rather than minimally. Worth doing *after*
-  the sensor streams, not before — the ordered fixes below are the path to a first
-  frame and shouldn't be mixed with refactoring.
+  file, so the dropped mono/RAW16 support can be brought back properly rather
+  than minimally if it is wanted.
 
 Upstreaming later is a real divergence question, not a patch submission: will's
 driver is an upstream-style V4L2 subdev for Raspberry Pi, and this is a tegracam
@@ -259,13 +257,53 @@ a file someone will read as documentation is a trap, and they become live the
 moment the driver is swapped. The overlay compiles and the values were confirmed
 by round-tripping the deployed `.dtbo` with `dtc -I dtb`.
 
-**Still untested on hardware.** Seven fixes in, the remaining known-unknowns are
-the supplies, the `cil_settletime = 0` assumption, and whether ClearHDR/mono are
-wanted back.
+**Still untested on hardware.** The remaining known-unknowns are the supplies,
+the `cil_settletime = 0` assumption, and whether ClearHDR/mono are wanted back.
 
-Still outstanding, minor: `imx585_board_setup()` reads the model ID and only
-`dev_dbg`s it, never compares — F4 is unimplemented. And
-`MODULE_AUTHOR("NVIDIA Corporation")` is copied boilerplate.
+### The control path
+
+Reading the driver against `camera_common.c`, `tegracam_v4l2.c` and Kurokesu's
+`nv_imx585.c` turned up four more defects, each of which denies a usable frame
+or a usable control on its own. All four are fixed; none is hardware-tested.
+
+- **Mode table vs. DT.** The driver listed 1928x1090 at index 0 and 3856x2180 at
+  index 1 while the overlay describes a single `mode0` of 3856x2180.
+  `camera_common_try_fmt` picks `s_data->mode` from the frmfmt entry and tegracam
+  indexes `sensor_modes[]` with it, so `populate_sensor_mode_props()` overwrote
+  the DT's 4K geometry with 1928x1090 and a 4K format request indexed past the
+  one-element array. Now: `imx585_modes[]` is 4K only, index for index with the
+  DT, and `populate_sensor_mode_props()` fails probe if the count or any
+  width/height disagrees. The binned FHD mode returns when the overlay carries a
+  `mode1` for it and the min-HMAX table has a binned row.
+- **Exposure units.** `set_exposure()` subtracted microseconds from VMAX in lines;
+  anything over 2250 µs underflowed and clamped to `IMX585_VMAX_MAX`, which is
+  larger than VMAX. Now converted at `IMX585_PIXEL_RATE / (HMAX * 1e6)`, clamped
+  to `[IMX585_EXPOSURE_MIN, VMAX - SHR_MIN]`, SHR kept even as will's driver does.
+- **Frame-rate floor.** `set_frame_rate()` clamped VMAX to at least
+  `min_framerate`, which is 1000000 micro-fps, pinning VMAX between 1,000,000 and
+  1,048,575 lines (about 0.07 fps) for every write. Now `VMAX = PIXEL_RATE * 1e6 /
+  (HMAX * µfps)`, floored at the mode's default VMAX (its maximum rate), and
+  exposure is re-applied afterwards because SHR is relative to VMAX.
+- **Stream start.** tegracam calls `set_mode`, then the overrides, then
+  `start_streaming`. Both of ours ran `imx585_mode_init()`, so every register was
+  written twice and the second pass reset VMAX after any frame-rate override. And
+  the overrides only run when the VI channel's `override_enable` control is on,
+  which it is not in a plain V4L2 session; `tegracam_set_ctrls` also drops writes
+  while the sensor is unpowered. Now `set_mode` only records the mode, the
+  `set_*` callbacks cache the requested value in `priv` as well as writing it, and
+  `start_streaming` applies gain, VMAX and SHR itself after the mode tables.
+  Controls set with `v4l2-ctl` before streaming therefore take effect without
+  `override_enable`.
+
+Alongside: `REGCACHE_RBTREE` → `REGCACHE_NONE` (the cache went stale across every
+power cycle and nothing read-modify-writes); `imx585_parse_dt()` no longer reads
+`avdd-reg`/`dvdd-reg`/`iovdd-reg`/`reset-gpios` into fields nothing consumed; the
+"model ID" read at 0x0016/0x0017 — IMX219 addresses, the IMX585 map starts at
+0x3000 and neither reference driver identifies the part — is replaced by a
+presence check that reads `MODE_SELECT` after the reset pulse and expects
+STANDBY; `reset-gpios` is now `GPIO_ACTIVE_LOW` in the overlay and the driver
+asserts/releases it in the conventional sense (CAM_EN is XCLR: low is reset);
+`MODULE_AUTHOR` is no longer NVIDIA's boilerplate.
 
 ### The hardware is StarlightEye, not a Kurokesu module
 
@@ -298,7 +336,7 @@ All of the following are in `imx585-overlay.dts` and verified by compiling with
 | Sensor clock | `clocks = <&bpmp TEGRA234_CLK_EXTPERIPH1>`, `assigned-clock-rates = <24000000>`, `mclk = "extperiph1"` | `imx585_inck`, a `fixed-clock` at 24 MHz; `clocks = <&imx585_inck>`, `clock-names`/`mclk` = `"inck"` |
 | `link-frequencies` | 594 MHz (`IMX585_LANE_RATE 1188000000`) | **720 MHz** (`1440000000`), the designer's own value |
 | `csi_pixel_bit_depth` | `"10"` (both modes) | `"12"` |
-| cam0 `imx585_a` | `status = "okay"` | `status = "disabled"` — 2-lane connector |
+| cam0 `imx585_a` | `status = "okay"` | no node — 2-lane connector; the overlay describes cam1 only |
 | cam1 `imx585_c` | `status = "disabled"` | **`status = "okay"`** — `serial_c`, 4 lanes, `lane_polarity = "0"` |
 
 **Fix 2 is settled by the oscillator.** The DT's job is to *state* the rate, not
@@ -311,9 +349,11 @@ The `"inck"` name is load-bearing: `imx585_parse_dt()` reads the `mclk` string i
 IMX585-YOCTO-NOTES.md §8.5 had this right; the EXTPERIPH1 form reached the correct
 `inck_sel` by configuring a Tegra clock output the board ignores.
 
-**`__overrides__` could not have fixed the cam0/cam1 inversion.** It is a Raspberry
-Pi firmware feature, inert under UEFI/extlinux, so on Jetson whatever the file
-defaults to is what boots, so the `status` values are set in the file itself.
+**No `__overrides__`.** It is a Raspberry Pi firmware feature, inert under
+UEFI/extlinux, so on Jetson whatever the file says is what boots. Likewise no
+`gpio@6000d000` hog: that address is Tegra K1's GPIO controller and the node could
+never have bound on Tegra234, and a correct hog would have claimed CAM1_PWDN
+ahead of `reset-gpios`. A node kept deliberately broken is a trap, so it is gone.
 
 ### Still open on the DT
 
@@ -330,18 +370,12 @@ defaults to is what boots, so the `status` values are set in the file itself.
   TMP117/IMU/CH32V003), so they are the equivalent of will's `cam_dummy_reg` and
   take the FPC 3V3 as their input, not the carrier's `vdd_1v8_ao`, which does not
   reach the connector.
-- **`pix_clk_hz = "600000000"` and `line_length = "11200"`** remain placeholders.
-  Low priority: `imx585_populate_sensor_mode_props()` overwrites both from its own
-  computation, so the DT values are inert for this driver — but see ordered fix 4,
-  because that computation is itself wrong (`bpp = 10`).
-- **`gain_factor`/`max_gain_val` in the DT** still describe a linear Q4 scale
-  (ordered fix 6), and `embedded_metadata_height = "2"` still contradicts the
-  driver's register table (ordered fix 5) — which that fix resolves in favour of
-  the register: it must become `"0"`.
-- **cam0 plumbing is now dead weight.** Its VI channel, NVCSI channel and
-  `tegra-camera-platform` `module0` entry still exist, pointing at a disabled
-  sensor and a `sysfs-device-tree` path that will not appear. Harmless for V4L2
-  capture; a single-camera overlay would be cleaner, and is the eventual shape.
+- **Mode properties** (`pix_clk_hz`, `line_length`, gain and framerate ranges,
+  `embedded_metadata_height`) match what `imx585_populate_sensor_mode_props()`
+  computes. The driver overwrites them anyway; they are kept accurate so the DT
+  reads as documentation and stays live if the driver is swapped.
+- **Single camera.** The overlay describes cam1 only: one VI channel, one NVCSI
+  channel, one `tegra-camera-platform` module, `num_csi_lanes = <4>`.
 - Still to fold in: the CEF168 `v4l2_lens` node — see "The CEF168 lens node"
   below. Blocked on one physical fact, not on analysis.
 
@@ -504,8 +538,9 @@ Added to the `i2c@1` leg of `imx585-overlay.dts`, verified to compile with `dtc 
 | `0x68` | ICM-42688-P (U11) | `invensense,icm42688`, **`status = "disabled"`** |
 
 The IMU is disabled on purpose and cannot simply be switched on.
-`inv_icm42600_core_probe()` ends its IRQ lookup with
-`return dev_err_probe(dev, irq, "error missing INT1 interrupt")` — no polled mode.
+`inv_icm42600_core_probe()` in 6.8.12 starts with `irq_get_irq_data(irq)` and
+fails with `"could not find IRQ %d"` when the I2C client has no interrupt — no
+polled mode.
 On StarlightEye V2.0, INT1/INT2 reach only TP10/TP13 through R21/R22, both **DNP**,
 so no interrupt leaves the board, and the FPC's one camera GPIO is already `CAM_EN`.
 Enabling the node as it stands yields a probe failure every boot and no IIO device.
