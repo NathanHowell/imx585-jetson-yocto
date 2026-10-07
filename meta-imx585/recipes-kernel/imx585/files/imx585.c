@@ -60,6 +60,10 @@
  * into digital gain, which is not what a linear-raw pipeline wants applied
  * silently, so set_gain() clamps here. */
 #define IMX585_ANALOG_GAIN_MAX          240
+/* ClearHDR companding costs analog headroom: the ceiling drops to 80 steps
+ * (24 dB) from 240 (72 dB). Same split as the pre-conversion driver's
+ * IMX585_ANA_GAIN_MAX_HDR / _NORMAL. */
+#define IMX585_ANALOG_GAIN_MAX_HDR      80
 /* Group hold: writing 1 defers exposure/gain register updates until it is
  * cleared, so a frame cannot be captured with exposure from one setting and gain
  * from the next. */
@@ -276,13 +280,9 @@ static const struct cci_reg_sequence imx585_common_regs[] = {
 	{ CCI_REG8(0x4bbe), 0x03 },
 	{ CCI_REG8(0x4bbf), 0x03 },
 	{ CCI_REG8(0x4bc0), 0x03 },
-	/* Entries below were dropped by the tegracam conversion: the table was
-	 * truncated here, losing 109 of the baseline's 226 writes. Restored
-	 * verbatim from the pre-conversion driver, two per line as it had them.
-	 * The layout is kept so this block stays directly comparable against
-	 * will127534's Raspberry Pi driver, which remains the reference for the
-	 * register *values* even though this file is now its own driver. Sony's
-	 * undocumented "shall be set to this value" calibration registers. */
+	/* Sony's undocumented "shall be set to this value" calibration registers.
+	 * Kept two per line, matching will127534's driver, so the block can be
+	 * diffed against his tables -- he remains the reference for the values. */
 	{ CCI_REG8(0x4c14), 0x87 },
 	{ CCI_REG8(0x4c16), 0x91 }, { CCI_REG8(0x4c18), 0x91 },
 	{ CCI_REG8(0x4c1a), 0x87 }, { CCI_REG8(0x4c1c), 0x78 },
@@ -491,8 +491,11 @@ static inline u32 imx585_get_min_hmax(const struct imx585 *priv,
 {
 	u32 base = imx585_min_hmax_4lane_4k[priv->link_freq_idx];
 	u32 scale = (priv->lane_count == 2) ? 2 : 1;
+	/* ClearHDR reads the pixel array twice per frame, so the line period
+	 * doubles -- as does VMAX, applied in populate_sensor_mode_props(). */
+	u32 hdr_scale = priv->clear_hdr ? 2 : 1;
 
-	return (base * scale) / mode->hmax_div;
+	return (base * scale * hdr_scale) / mode->hmax_div;
 }
 
 static int imx585_write_table(struct imx585 *priv,
@@ -668,9 +671,8 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 {
 	struct camera_common_data *s_data = priv->s_data;
 	struct sensor_properties *props = &s_data->sensor_props;
-	/* The sensor is RAW12. This was 10, a placeholder migrated out of the DT,
-	 * and it made the advertised pixel_clock 20% too high. */
-	const u32 bpp = 12;
+	/* RAW12 normally; ClearHDR emits companded 16-bit. */
+	const u32 bpp = priv->clear_hdr ? 16 : 12;
 	u32 num_modes;
 	u32 i;
 
@@ -685,7 +687,10 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		u32 hmax = imx585_get_min_hmax(priv, src);
 		u64 link_freq = imx585_link_freq_table[priv->link_freq_idx];
 		u64 pixel_clock = div_u64(link_freq * 2ULL * priv->lane_count, bpp);
-		u64 frame_length = src->default_vmax;
+		/* VMAX doubles in ClearHDR, matching the HMAX doubling in
+		 * imx585_get_min_hmax(). */
+		u64 frame_length = (u64)src->default_vmax *
+				   (priv->clear_hdr ? 2 : 1);
 		u64 frame_time_us;
 		u64 min_exp_us;
 		u64 max_exp_us;
@@ -708,10 +713,9 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		 * 237600000 / 4224 == 74250000 / 1320 == 56250 lines/s, where 1320
 		 * is will's min HMAX at that link frequency.
 		 *
-		 * Everything below previously divided by pixel_clock instead, which
-		 * inflated every derived timing by pixel_clock / 74.25 MHz -- a
-		 * factor of 6.46 at our 720 MHz link. It advertised ~323 fps and a
-		 * 3 ms frame time for a mode that actually runs at 50 fps.
+		 * Dividing by pixel_clock here instead would inflate every derived
+		 * timing by pixel_clock / 74.25 MHz -- a factor of 6.46 at a 720 MHz
+		 * link.
 		 */
 		frame_time_us = div_u64((u64)hmax * frame_length * 1000000ULL,
 					IMX585_PIXEL_RATE);
@@ -743,7 +747,16 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		dst->image_properties.width = src->width;
 		dst->image_properties.height = src->height;
 		dst->image_properties.line_length = line_length;
-		dst->image_properties.pixel_format = V4L2_PIX_FMT_SRGGB12;
+		/* ClearHDR is 16-bit, and SBGGR16 is a deliberate compromise: it is
+		 * the ONLY 16-bit raw entry in NVIDIA's camera_common colorfmt table
+		 * (camera_common.c), which has no SRGGB16. This sensor is RGGB, and
+		 * the pre-conversion driver uses MEDIA_BUS_FMT_SRGGB16_1X16, so in
+		 * HDR the declared Bayer phase is wrong by one pixel even though the
+		 * data is correct. Fixing it properly means patching camera_common
+		 * via nvidia-kernel-oot's EXTRA_PATCHES. Irrelevant while clear_hdr
+		 * is off, which is the default. See PORTING.md. */
+		dst->image_properties.pixel_format = priv->clear_hdr ?
+			V4L2_PIX_FMT_SBGGR16 : V4L2_PIX_FMT_SRGGB12;
 		/* imx585_common_regs writes 0x303a = 0x03, which disables embedded
 		 * data -- the pre-conversion driver carries that write with exactly
 		 * that comment, and Kurokesu's working Jetson DT likewise sets
@@ -754,16 +767,15 @@ static void imx585_populate_sensor_mode_props(struct imx585 *priv)
 		/* Gain is reported in decibels, matching the hardware: IMX585
 		 * analog gain is 0.3 dB per step over 0..240 (0..72 dB). With
 		 * gain_factor 10 the values here are dB*10, so step 3 == 0.3 dB and
-		 * max 720 == 72 dB. This replaces a linear Q4 scale
-		 * (gain_factor 16, 16..512) that imx585_set_gain() then wrote raw
-		 * into the register, which both mis-scaled the gain and ran off the
-		 * end of the analog range. Same shape as Kurokesu's working DT. */
+		 * max 720 == 72 dB. Same shape as Kurokesu's working DT. */
 		dst->control_properties.gain_factor = 10;
 		dst->control_properties.framerate_factor = 1000000;
 		dst->control_properties.exposure_factor = 1000000;
 		dst->control_properties.inherent_gain = 1;
 		dst->control_properties.min_gain_val = 0;
-		dst->control_properties.max_gain_val = 720;
+		dst->control_properties.max_gain_val =
+			priv->clear_hdr ? (IMX585_ANALOG_GAIN_MAX_HDR * 3)
+					: (IMX585_ANALOG_GAIN_MAX * 3);
 		dst->control_properties.step_gain_val = 3;
 		dst->control_properties.default_gain = 0;
 		dst->control_properties.min_hdr_ratio = 1;
@@ -923,20 +935,21 @@ static int imx585_set_gain(struct tegracam_device *tc_dev, s64 val)
 	struct camera_common_data *s_data = tc_dev->s_data;
 	const struct sensor_mode_properties *mode =
 		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
+	const u32 gain_max = priv->clear_hdr ? IMX585_ANALOG_GAIN_MAX_HDR
+					     : IMX585_ANALOG_GAIN_MAX;
 	u32 gain;
 
 	/* val arrives in the units the mode advertises: dB * gain_factor, with
-	 * gain_factor 10. The register wants 0.3 dB steps, hence /3. Previously
-	 * val went into the register raw against a linear Q4 scale, so a
-	 * requested 1x wrote 16 (4.8 dB) and the top of the advertised range
-	 * wrote 512 -- more than double the analog maximum, landing in digital
-	 * gain. Clamp to the advertised range first, then to the hardware. */
+	 * gain_factor 10. The register takes 0.3 dB steps, hence /3. Clamp to the
+	 * advertised range first, then to the hardware ceiling -- above it the
+	 * sensor applies digital gain, which a linear-raw pipeline does not want
+	 * happening silently. */
 	val = clamp_t(s64, val, mode->control_properties.min_gain_val,
 		      mode->control_properties.max_gain_val);
 
 	gain = div_u64((u64)val, 3);
-	if (gain > IMX585_ANALOG_GAIN_MAX)
-		gain = IMX585_ANALOG_GAIN_MAX;
+	if (gain > gain_max)
+		gain = gain_max;
 
 	dev_dbg(priv->dev, "%s: %lld (dB*10) -> gain reg %u\n", __func__, val,
 		gain);
@@ -988,9 +1001,8 @@ static int imx585_set_group_hold(struct tegracam_device *tc_dev, bool val)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
 
-	/* Was a stub returning 0, which told tegracam the hold had been taken
-	 * when nothing had, so exposure and gain could land either side of a
-	 * frame boundary. */
+	/* Must actually take the hold: tegracam uses this to keep an exposure and
+	 * a gain update on the same side of a frame boundary. */
 	return cci_write(priv->regmap, IMX585_REG_REGHOLD, val ? 1 : 0, NULL);
 }
 
@@ -1171,7 +1183,22 @@ static int imx585_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	priv->tc_dev = tc_dev;
-	priv->clear_hdr = false;
+	/* ClearHDR is opt-in from the device tree and off by default.
+	 *
+	 * It is not a control because tegracam owns the control handler and its
+	 * list is TEGRA_CAMERA_CID_*; the pre-conversion driver exposes this as a
+	 * V4L2 menu control, which does not transfer. TEGRA_CAMERA_CID_HDR_EN
+	 * exists but has no tegracam_ctrl_ops hook, so a DT property is the
+	 * honest mechanism for a mode that cannot change while streaming anyway.
+	 *
+	 * Note ClearHDR is *companded*, i.e. non-linear. This distro exists to get
+	 * linear raw out of this sensor, so enabling it is contrary to the usual
+	 * goal and is here for completeness rather than because it is wanted.
+	 * Untested on hardware. See PORTING.md for what is still missing. */
+	priv->clear_hdr = of_property_read_bool(dev->of_node, "sony,clear-hdr");
+	if (priv->clear_hdr)
+		dev_warn(dev,
+			 "ClearHDR enabled: output is companded 16-bit, not linear\n");
 
 	strscpy(tc_dev->name, "imx585", sizeof(tc_dev->name));
 	tc_dev->client = client;
