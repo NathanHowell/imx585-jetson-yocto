@@ -112,10 +112,8 @@ It never produced a frame. These are the reasons, in the order they block one.
    ```
 
    Note the order: XMSTA is released **before** MODE_SELECT, not after the
-   post-MODE_SELECT sleep. An earlier draft of this file guessed "after the
-   sleep"; the baseline says otherwise. The conversion dropped only the XMSTA
-   call, keeping the MODE_SELECT write that follows it. We have no external-sync
-   plumbing, so the guard collapses to an unconditional write.
+   post-MODE_SELECT sleep. We have no external-sync plumbing, so the guard
+   collapses to an unconditional write.
 
 2. **`imx585_common_regs` is truncated: 109 writes missing — FIXED.** The baseline's
    `common_regs[]` has 226 entries; ours has 117. Ours is an *exact prefix* --
@@ -265,16 +263,13 @@ by round-tripping the deployed `.dtbo` with `dtc -I dtb`.
 the supplies, the `cil_settletime = 0` assumption, and whether ClearHDR/mono are
 wanted back.
 
-Lesser: ~~`imx585_set_group_hold()` is a stub returning 0~~ — **fixed**, see
-below. `imx585_board_setup()` reads the model ID and only `dev_dbg`s it, never
-compares — F4 is unimplemented. `MODULE_AUTHOR("NVIDIA Corporation")` is copied
-boilerplate. ~~`imx585_populate_sensor_mode_props()`'s loop body is dedented out
-of its own `for`~~ — that function was rewritten, so the indentation is now sane.
+Still outstanding, minor: `imx585_board_setup()` reads the model ID and only
+`dev_dbg`s it, never compares — F4 is unimplemented. And
+`MODULE_AUTHOR("NVIDIA Corporation")` is copied boilerplate.
 
 ### The hardware is StarlightEye, not a Kurokesu module
 
-This correction invalidates an earlier version of this section, which said to take
-Kurokesu's measured DT values. The camera is
+The camera is
 **[will127534/StarlightEye](https://github.com/will127534/StarlightEye) V2.0** —
 and will127534 is also the author of the `imx585.c` this layer builds. The driver
 and the board are by the same person, for each other. Kurokesu's values
@@ -318,26 +313,23 @@ IMX585-YOCTO-NOTES.md §8.5 had this right; the EXTPERIPH1 form reached the corr
 
 **`__overrides__` could not have fixed the cam0/cam1 inversion.** It is a Raspberry
 Pi firmware feature, inert under UEFI/extlinux, so on Jetson whatever the file
-defaults to is what boots — which is why the `status` values had to change in the
-file itself.
+defaults to is what boots, so the `status` values are set in the file itself.
 
 ### Still open on the DT
 
-- ~~**Supplies are loosely modelled.**~~ **RESOLVED, and the conclusion reversed.**
-  The claim that always-on was inaccurate came from comparing against
-  will127534's overlay, which gates 3.3 V with `startup-delay-us = <300000>`.
-  Reading his actual Raspberry Pi overlay: `vana-supply` points at `cam1_reg`, a
+- **Supplies: settled.** All three rails are `regulator-fixed` always-on, which is
+  accurate for this carrier. will127534's Raspberry Pi overlay points
+  `vana-supply` at `cam1_reg` with `startup-delay-us = <300000>`, but that is a
   regulator the *RPi base DT* defines for the CAM connector's GPIO-switched 3V3,
   the delay covers the on-board LDOs rising after 3V3 is applied, and his
-  `regulator-always-on` sits in a `__dormant__` (opt-in) fragment. None of that
+  `regulator-always-on` sits in a `__dormant__` (opt-in) fragment. None of it
   transfers: the p3768 camera FPC has no gate, 3V3 is present whenever the carrier
-  is, and the one camera GPIO is CAM_EN, already spent on `reset-gpios`. So
-  always-on is the *accurate* model here and the description was what needed
-  fixing. One real bug did fall out: `imx585_vddl` had
-  `vin-supply = <&vdd_1v8_ao>`, the carrier's own 1.8 V rail, which does not reach
-  the camera connector -- U2 (LP5907MFX-1.8) is an LDO fed from the FPC 3V3, and
-  it feeds the TMP117/IMU/CH32V003 too, so the whole 1.8 V domain was attributed
-  to the wrong source.
+  is, and the one camera GPIO is CAM_EN, already spent on `reset-gpios`. `vana` is
+  the only rail the host provides; `vdig` and `vddl` are generated on StarlightEye
+  (U3, and U2 = LP5907MFX-1.8 feeding the whole 1.8 V domain including the
+  TMP117/IMU/CH32V003), so they are the equivalent of will's `cam_dummy_reg` and
+  take the FPC 3V3 as their input, not the carrier's `vdd_1v8_ao`, which does not
+  reach the connector.
 - **`pix_clk_hz = "600000000"` and `line_length = "11200"`** remain placeholders.
   Low priority: `imx585_populate_sensor_mode_props()` overwrites both from its own
   computation, so the DT values are inert for this driver — but see ordered fix 4,
@@ -500,75 +492,6 @@ Not used: NVIDIA's drivernode1/pcl_id = "v4l2_lens". Nothing under
 nvidia-oot/drivers reads pcl_id or sysfs-device-tree; they are Argus metadata and
 this distro bypasses Argus for linear raw.
 
-### Historical: how the CEF168 placement was undecided
-
-The driver side is **VERIFIED and in good shape.** `recipes-kernel/cef168`
-fetches pinefeat/cef168 at a pinned SRCREV, and the source is a real
-`v4l2_subdev` exposing `V4L2_CID_FOCUS_ABSOLUTE` (0..S16_MAX) and
-`V4L2_CID_FOCUS_RELATIVE` — precisely the two controls a contrast-detect AF loop
-needs, since the IMX585 has no PDAF. Its `of_match_table` is
-`{ .compatible = "pinefeat,cef168" }` and it requests a `vcc` supply, so the
-archived nodes' `compatible` and `vcc-supply` are both right.
-
-What is *not* settled is which bus it hangs off, and the archive cannot settle it
-because it contains three mutually exclusive answers:
-
-| Archived DTS | Placement |
-|---|---|
-| `…-oe4t-imx585-cef168.dts` | `cam_i2cmux/i2c@0` (cam0 FPC leg) |
-| `…-oe4t-imx585-cef168-cam1.dts` | `cam_i2cmux/i2c@1` (cam1 FPC leg) |
-| `…-oe4t-cef168-header-i2c.dts` | `gen1_i2c`, 40-pin header, and *disables* the FPC node |
-
-Three variants exist because the placement was being explored, not decided. This
-is a wiring fact about hardware, and inventing one is how the placeholders this
-file catalogues got here, so it is not being guessed.
-
-**The technical argument favours the 40-pin header.** `cam_i2cmux` is a
-GPIO-switched i2c-mux, so a lens controller on an FPC leg is only addressable
-while the mux selects that leg, and AF traffic then contends with sensor register
-writes on the same segment as the sensor at 0x1a. A continuous AF loop running
-during capture is exactly the case that makes that contention matter. On
-`gen1_i2c` the focus loop is independent of the capture path. The header variant
-is also the only one documenting physical wiring (header pins 1/3/5/6 with wire
-colours), which suggests it is the one that was actually built.
-
-**But the archived header overlay cannot be used as-is on R39.2.1 — VERIFIED:**
-
-- It opens `&pinctrl { … }`, and **no `pinctrl:` label exists anywhere in
-  R39.2.1's DT sources.** The label is `pinmux` (`pinmux@2430000` in
-  `t23x/nv-public/tegra234.dtsi`). That reference cannot resolve.
-- `gen1_i2c` is `status = "disabled"` in `tegra234.dtsi`, and no p3768/p3767
-  platform `.dtsi` enables it, so the overlay must enable the controller itself.
-  The archived one does; worth stating because it is not a no-op.
-- Our overlay deliberately uses `target-path = "/"` with name-nesting rather than
-  label references (`&gen1_i2c`), because label-based overlays need `__symbols__`
-  in the base DTB and the base here is NVIDIA's prebuilt `-nv-super.dtb`. Folding
-  this in means re-expressing it as `bus@0 { i2c@3160000 { … } }` plus
-  `bus@0 { pinmux@2430000 { … } }`, not copying the `&`-form.
-
-So when the wiring is known, folding in is: the `cef168@d` node (`reg = <0x0d>`,
-`compatible = "pinefeat,cef168"`, `vcc-supply`), on the chosen bus in
-name-nested form; and a `drivernode1 { pcl_id = "v4l2_lens"; sysfs-device-tree =
-… }` inside `tegra-camera-platform`'s `module1` (our enabled sensor is
-`imx585_c` on `i2c@1`, so it is `module1`, not `module0`), with the
-`sysfs-device-tree` path matching the node's real path exactly.
-
-### Leave the gpio-hog broken
-
-`gpio@6000d000` with a `camera-control-output-low` hog, commented "Hold sensors in
-PWDN at boot", targets a controller that **does not exist on Tegra234** -- the real
-ones are `gpio@2200000` (main) and `gpio@c2f0000` (AON). It is not our invention:
-NVIDIA's own R39.2.1 camera overlays carry the identical node
-(tegra234-p3767-camera-p3768-imx477-A.dts, -imx219-A.dts,
--imx477-dual-4lane.dts), so it is inert in their reference overlays too. The
-node simply has no driver and does nothing.
-
-**Do not "fix" the address.** Pointing it at `gpio@2200000` would make the hog
-claim CAM1_PWDN, and the sensor node's `reset-gpios` request on that same line
-would then fail with -EBUSY. The hog being bogus is the only reason reset works.
-If boot-time PWDN hold is ever actually wanted, it has to come from somewhere
-other than a hog on a line a driver also owns.
-
 ### On-board I2C peripherals — done
 
 Added to the `i2c@1` leg of `imx585-overlay.dts`, verified to compile with `dtc -@`:
@@ -662,11 +585,10 @@ python __anonymous () {
 ```
 
 The `setVar` runs at parse finalisation, so **the only way to get an entry in is
-to name a `DEPENDS` beginning with `kernel-module-`.** Two earlier attempts here
-both failed silently and for different reasons: an `EXTRA_OEMAKE` entry (the
-class passes `KBUILD_EXTRA_SYMBOLS` explicitly later on the make command line,
-winning), then a plain bitbake variable (this `setVar` wins). Each produced a
-module that built cleanly and could never load.
+to name a `DEPENDS` beginning with `kernel-module-`.** Setting it directly loses to
+the `setVar`; setting it through `EXTRA_OEMAKE` loses to the class passing
+`KBUILD_EXTRA_SYMBOLS` explicitly later on the make command line. Either way the
+module builds cleanly and can never load.
 
 The fix is to use the convention meta-tegra already provides for it:
 
@@ -730,13 +652,10 @@ appears, and it is a first-class mechanism rather than a workaround.
 
 ## Likely to need changes
 
-- ~~**Device tree names.**~~ **RESOLVED** — see "The base DTB: decided" above.
-  The `-oe4t.dtb` is ours, not NVIDIA's, and its entire content is one cosmetic
-  compatible string, so the override goes and we boot the stock
-  `-nv-super.dtb`. That also retires the `DTC_PPFLAGS -DLINUX_VERSION=600`
-  question, which only ever applied to `imx585-devicetree_1.0.bb`.
-- **DT include paths — RESOLVED, and one entry was wrong.** The root was already
-  confirmed (`cp -R ${S}/hardware/nvidia/ ${D}/usr/src/device-tree` plus
+- **Device tree names: settled** — see "The base DTB: decided" above. We boot the
+  stock `-nv-super.dtb`; `DTC_PPFLAGS -DLINUX_VERSION=600` went with
+  `imx585-devicetree`.
+- **DT include paths: settled.** The root is (`cp -R ${S}/hardware/nvidia/ ${D}/usr/src/device-tree` plus
   `SYSROOT_DIRS += "/usr/src/device-tree"`). The subtree layout is now VERIFIED
   against R39.2.1's staged tree, and it is split:
 
@@ -753,13 +672,12 @@ appears, and it is a first-class mechanism rather than a workaround.
   from `KERNEL_INCLUDE` instead. That file is byte-identical to NVIDIA's copy in
   6.8.12, so the overlay compiled correctly by accident. Corrected in the recipe
   so NVIDIA's headers win deliberately.
-- ~~**`imx585.cfg`.** `CONFIG_V4L2_CCI{,_I2C}` … if you land on tegracam, drop them.~~
-  **Wrong twice over.** They are required (the conversion kept the CCI register
-  tables), *and* the way they were being set did nothing. See "The CCI accessors
-  were never actually enabled" above: both symbols are promptless and only a
-  `select` turns them on. Now pulled in via `CONFIG_VIDEO_IMX219=m`, and
-  **VERIFIED** in the rebuilt config as `CONFIG_V4L2_CCI=m` /
-  `CONFIG_V4L2_CCI_I2C=m`.
+- **`imx585.cfg` / the CCI accessors: settled.** They are required, because this
+  driver keeps the CCI register tables, and they cannot be set directly — both
+  symbols are promptless and only a `select` turns them on. Pulled in via
+  `CONFIG_VIDEO_IMX219=m`, and **VERIFIED** in the built config as
+  `CONFIG_V4L2_CCI=m` / `CONFIG_V4L2_CCI_I2C=m`. See "The CCI accessors were never
+  actually enabled" above.
 - **CEF168 — partly verified.** `recipes-kernel/cef168/` pins pinefeat/cef168 at
   `3abcaeef`. The source has been read: it is a `v4l2_subdev` with
   `V4L2_CID_FOCUS_ABSOLUTE`/`_RELATIVE`, `of_match_table` of `"pinefeat,cef168"`,
