@@ -323,11 +323,21 @@ file itself.
 
 ### Still open on the DT
 
-- **Supplies are loosely modelled.** Upstream points `vana-supply` at the
-  host-gated 3.3 V with `startup-delay-us = <300000>` and `vdig`/`vddl` at a
-  **dummy** regulator, because those rails are on-board (U3/U2). The three
-  invented `regulator-fixed` always-on nodes here are the right shape but do not
-  describe that split. They work; they are not accurate.
+- ~~**Supplies are loosely modelled.**~~ **RESOLVED, and the conclusion reversed.**
+  The claim that always-on was inaccurate came from comparing against
+  will127534's overlay, which gates 3.3 V with `startup-delay-us = <300000>`.
+  Reading his actual Raspberry Pi overlay: `vana-supply` points at `cam1_reg`, a
+  regulator the *RPi base DT* defines for the CAM connector's GPIO-switched 3V3,
+  the delay covers the on-board LDOs rising after 3V3 is applied, and his
+  `regulator-always-on` sits in a `__dormant__` (opt-in) fragment. None of that
+  transfers: the p3768 camera FPC has no gate, 3V3 is present whenever the carrier
+  is, and the one camera GPIO is CAM_EN, already spent on `reset-gpios`. So
+  always-on is the *accurate* model here and the description was what needed
+  fixing. One real bug did fall out: `imx585_vddl` had
+  `vin-supply = <&vdd_1v8_ao>`, the carrier's own 1.8 V rail, which does not reach
+  the camera connector -- U2 (LP5907MFX-1.8) is an LDO fed from the FPC 3V3, and
+  it feeds the TMP117/IMU/CH32V003 too, so the whole 1.8 V domain was attributed
+  to the wrong source.
 - **`pix_clk_hz = "600000000"` and `line_length = "11200"`** remain placeholders.
   Low priority: `imx585_populate_sensor_mode_props()` overwrites both from its own
   computation, so the DT values are inert for this driver — but see ordered fix 4,
@@ -454,7 +464,43 @@ Two ways forward:
    means taking registration ownership away from tegracam and satisfying VI's
    notifier model. Later cleanup, not bring-up.
 
-### The CEF168 lens node — blocked on how it is wired
+### The CEF168 lens node — resolved
+
+**Bus: the 40-pin header (gen1_i2c).** Of the archive's three mutually exclusive
+placements this is the one the hardware uses, and also the better choice:
+cam_i2cmux is a GPIO-switched i2c-mux, so a lens on an FPC leg is addressable only
+while that leg is selected and AF traffic shares the segment with sensor writes at
+0x1a -- precisely the contention a continuous contrast-detect loop would hit while
+streaming. Implemented in the overlay: i2c@3160000 enabled (it is
+status = "disabled" in tegra234.dtsi and no p3768/p3767 platform .dtsi enables it),
+a pinmux group on pinmux@2430000 -- *not* &pinctrl, which has no label in R39.2.1
+-- and cef168@d with vcc-supply, which cef168_probe() requires rather than
+prefers.
+
+**Access: the standard V4L2 path, plumbed by hand.** lens-focus = <&cef168> on the
+sensor node plus a sensor-owned sub-notifier in the driver, since tegracam
+registers with a plain v4l2_async_register_subdev() and so cannot use
+v4l2_async_register_subdev_sensor(). Built from the exported pieces instead. This
+is what gets the lens bound into VI's v4l2_device and given a device node, and it
+means `v4l2-ctl --set-ctrl focus_absolute` works rather than a bespoke I2C path.
+
+**The coupling this creates, which is worth knowing before debugging anything
+else:** once lens-focus points at an enabled node, VI's root notifier cannot
+complete until that subdev binds, because v4l2_async_nf_can_complete() recurses
+into sub-notifiers. A CEF168 whose *driver* never loads therefore means no
+/dev/video0 at all -- a symptom that looks nothing like its cause. The driver
+guards the two cases it can detect (phandle absent, target disabled) and treats
+them as "no focus control" rather than an error; it cannot guard against
+kernel-module-cef168 being absent from the image. Mitigating fact:
+cef168_probe() performs no I2C at all -- regulator, subdev, controls, pads,
+async-register -- so a disconnected or unresponsive controller still binds and the
+camera still comes up, with only focus writes failing.
+
+Not used: NVIDIA's drivernode1/pcl_id = "v4l2_lens". Nothing under
+nvidia-oot/drivers reads pcl_id or sysfs-device-tree; they are Argus metadata and
+this distro bypasses Argus for linear raw.
+
+### Historical: how the CEF168 placement was undecided
 
 The driver side is **VERIFIED and in good shape.** `recipes-kernel/cef168`
 fetches pinefeat/cef168 at a pinned SRCREV, and the source is a real
@@ -506,6 +552,22 @@ name-nested form; and a `drivernode1 { pcl_id = "v4l2_lens"; sysfs-device-tree =
 … }` inside `tegra-camera-platform`'s `module1` (our enabled sensor is
 `imx585_c` on `i2c@1`, so it is `module1`, not `module0`), with the
 `sysfs-device-tree` path matching the node's real path exactly.
+
+### Leave the gpio-hog broken
+
+`gpio@6000d000` with a `camera-control-output-low` hog, commented "Hold sensors in
+PWDN at boot", targets a controller that **does not exist on Tegra234** -- the real
+ones are `gpio@2200000` (main) and `gpio@c2f0000` (AON). It is not our invention:
+NVIDIA's own R39.2.1 camera overlays carry the identical node
+(tegra234-p3767-camera-p3768-imx477-A.dts, -imx219-A.dts,
+-imx477-dual-4lane.dts), so it is inert in their reference overlays too. The
+node simply has no driver and does nothing.
+
+**Do not "fix" the address.** Pointing it at `gpio@2200000` would make the hog
+claim CAM1_PWDN, and the sensor node's `reset-gpios` request on that same line
+would then fail with -EBUSY. The hog being bogus is the only reason reset works.
+If boot-time PWDN hold is ever actually wanted, it has to come from somewhere
+other than a hog on a line a driver also owns.
 
 ### On-board I2C peripherals — done
 
