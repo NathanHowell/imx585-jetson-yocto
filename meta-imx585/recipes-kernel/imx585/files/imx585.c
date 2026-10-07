@@ -19,6 +19,8 @@
 
 #include <media/camera_common.h>
 #include <media/tegra_v4l2_camera.h>
+#include <linux/property.h>
+#include <media/v4l2-async.h>
 #include <media/tegracam_core.h>
 #include <media/v4l2-cci.h>
 #include <media/v4l2-fwnode.h>
@@ -452,6 +454,10 @@ struct imx585 {
 	u32 vmax;
 
 	bool clear_hdr;
+
+	/* Sub-notifier for the lens-focus actuator, NULL when none is described.
+	 * See imx585_register_lens_notifier(). */
+	struct v4l2_async_notifier *lens_nf;
 
 	struct mutex lock; /* protects streaming state */
 };
@@ -1017,6 +1023,79 @@ static struct camera_common_sensor_ops imx585_common_ops = {
 	.stop_streaming = imx585_stop_streaming,
 };
 
+/*
+ * Bind the focus actuator named by the sensor's "lens-focus" phandle.
+ *
+ * A lens controller is not in the data path: it has zero pads and no of_graph
+ * endpoints, and Tegra VI builds its notifier purely by walking endpoints
+ * (of_graph_get_next_endpoint -> of_graph_get_remote_port_parent in
+ * vi/graph.c). So VI never discovers a lens, never binds it into its
+ * v4l2_device, and v4l2_device_register_subdev_nodes() therefore never gives it
+ * a /dev/v4l-subdev node, however correctly the lens driver registers itself.
+ *
+ * The upstream answer is for the *sensor* to own a sub-notifier for its
+ * actuator, which is what v4l2_async_register_subdev_sensor() does for drivers
+ * that call it -- it parses "lens-focus" (v4l2-fwnode.c) and adds the reference
+ * to a notifier whose .sd is the sensor. tegracam registers the subdev itself
+ * with a plain v4l2_async_register_subdev(), so that helper is not available to
+ * us; this builds the same thing from the exported pieces.
+ *
+ * Must be called BEFORE tegracam_v4l2subdev_register(), because that is what
+ * async-registers the sensor, and v4l2_async_find_subdev_notifier() is consulted
+ * at bind time to link this notifier in as a child.
+ *
+ * Deliberately non-fatal when there is no lens to bind. Once a sub-notifier is
+ * registered, VI's root notifier cannot complete until it does --
+ * v4l2_async_nf_can_complete() recurses into sub-notifiers -- so a lens that
+ * never binds costs the whole camera its /dev/video node. Treating an absent or
+ * disabled lens-focus as "no focus control" rather than as an error keeps that
+ * failure impossible for the two cases we can detect here.
+ */
+static int imx585_register_lens_notifier(struct imx585 *priv)
+{
+	struct device *dev = priv->dev;
+	struct v4l2_subdev *sd = &priv->s_data->subdev;
+	struct v4l2_async_connection *asc;
+	struct fwnode_handle *lens;
+	int err;
+
+	lens = fwnode_find_reference(dev_fwnode(dev), "lens-focus", 0);
+	if (IS_ERR(lens))
+		return 0;
+
+	if (!fwnode_device_is_available(lens)) {
+		dev_info(dev, "lens-focus target is disabled, no focus control\n");
+		fwnode_handle_put(lens);
+		return 0;
+	}
+
+	priv->lens_nf = devm_kzalloc(dev, sizeof(*priv->lens_nf), GFP_KERNEL);
+	if (!priv->lens_nf) {
+		fwnode_handle_put(lens);
+		return -ENOMEM;
+	}
+
+	v4l2_async_subdev_nf_init(priv->lens_nf, sd);
+	asc = v4l2_async_nf_add_fwnode(priv->lens_nf, lens,
+				       struct v4l2_async_connection);
+	fwnode_handle_put(lens);
+	if (IS_ERR(asc)) {
+		v4l2_async_nf_cleanup(priv->lens_nf);
+		priv->lens_nf = NULL;
+		return PTR_ERR(asc);
+	}
+
+	err = v4l2_async_nf_register(priv->lens_nf);
+	if (err) {
+		v4l2_async_nf_cleanup(priv->lens_nf);
+		priv->lens_nf = NULL;
+		return err;
+	}
+
+	dev_dbg(dev, "lens-focus sub-notifier registered\n");
+	return 0;
+}
+
 static int imx585_board_setup(struct imx585 *priv)
 {
 	struct camera_common_data *s_data = priv->s_data;
@@ -1129,13 +1208,25 @@ static int imx585_probe(struct i2c_client *client)
 	if (err)
 		goto unregister;
 
-	err = tegracam_v4l2subdev_register(tc_dev, true);
+	/* Before tegracam_v4l2subdev_register(): that async-registers the sensor,
+	 * and the sub-notifier has to exist by then to be linked as its child. */
+	err = imx585_register_lens_notifier(priv);
 	if (err)
 		goto unregister;
+
+	err = tegracam_v4l2subdev_register(tc_dev, true);
+	if (err)
+		goto unregister_lens;
 
 	dev_info(dev, "Sony IMX585 tegracam driver registered\n");
 	return 0;
 
+unregister_lens:
+	if (priv->lens_nf) {
+		v4l2_async_nf_unregister(priv->lens_nf);
+		v4l2_async_nf_cleanup(priv->lens_nf);
+		priv->lens_nf = NULL;
+	}
 unregister:
 	tegracam_device_unregister(tc_dev);
 	return err;
@@ -1149,6 +1240,7 @@ static int imx585_remove(struct i2c_client *client)
 {
 	struct camera_common_data *s_data = to_camera_common_data(&client->dev);
 	struct tegracam_device *tc_dev;
+	struct imx585 *priv;
 
 	if (!s_data) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
@@ -1159,7 +1251,13 @@ static int imx585_remove(struct i2c_client *client)
 	}
 
 	tc_dev = to_tegracam_device(s_data);
+	priv = tegracam_to_imx585(tc_dev);
 	tegracam_v4l2subdev_unregister(tc_dev);
+	if (priv->lens_nf) {
+		v4l2_async_nf_unregister(priv->lens_nf);
+		v4l2_async_nf_cleanup(priv->lens_nf);
+		priv->lens_nf = NULL;
+	}
 	tegracam_device_unregister(tc_dev);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
 	return 0;
