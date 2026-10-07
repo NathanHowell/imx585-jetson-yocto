@@ -92,9 +92,8 @@
 			 * 3V3, feeding the whole 1.8 V domain -- the sensor's VDDL and
 			 * the TMP117/IMU/CH32V003 on this leg.
 			 *
-			 * vin-supply was <&vdd_1v8_ao>, which was wrong: that is the
-			 * carrier's own always-on 1.8 V rail and it does not reach the
-			 * camera connector. U2's input is the 3V3 the FPC carries.
+			 * vin-supply is the FPC 3V3, not the carrier's vdd_1v8_ao: that
+			 * rail does not reach the camera connector.
 			 */
 			imx585_vddl: regulator-imx585-vddl {
 				compatible = "regulator-fixed";
@@ -266,7 +265,7 @@
 								active_h = "2180";
 								mode_type = "bayer";
 								pixel_phase = "rggb";
-								csi_pixel_bit_depth = "12";	/* IMX585 RAW12; was 10 */
+								csi_pixel_bit_depth = "12";	/* IMX585 is RAW12 */
 								readout_orientation = "90";
 								line_length = "4267";       /* pixel_clock * HMAX / 74.25MHz; 480e6*660/74.25e6 */
 								mclk_multiplier = "80";
@@ -372,7 +371,7 @@
 								active_h = "2180";
 								mode_type = "bayer";
 								pixel_phase = "rggb";
-								csi_pixel_bit_depth = "12";	/* IMX585 RAW12; was 10 */
+								csi_pixel_bit_depth = "12";	/* IMX585 is RAW12 */
 								readout_orientation = "90";
 								line_length = "4267";       /* pixel_clock * HMAX / 74.25MHz */
 								mclk_multiplier = "80";
@@ -452,14 +451,19 @@
 						/* U11, ICM-42688-P 6-axis IMU.
 						 *
 						 * DISABLED DELIBERATELY, and it cannot just be switched on.
-						 * inv_icm42600_core_probe() ends its IRQ lookup with
+						 * inv_icm42600_core_probe() in 6.8.12 begins with
 						 *
-						 *     if (irq < 0)
-						 *             return dev_err_probe(dev, irq,
-						 *                     "error missing INT1 interrupt");
+						 *     irq_desc = irq_get_irq_data(irq);
+						 *     if (!irq_desc) {
+						 *             dev_err(dev, "could not find IRQ %d\n", irq);
+						 *             return -EINVAL;
+						 *     }
 						 *
-						 * so the driver refuses to probe without an interrupt -- there is no
-						 * polled mode. On StarlightEye V2.0 INT1/INT2 reach only TP10/TP13
+						 * and inv_icm42600_i2c_probe() passes client->irq, which is 0 when
+						 * the node has no interrupt, so irq_get_irq_data(0) returns NULL and
+						 * probe fails. There is no polled mode.
+						 *
+						 * On StarlightEye V2.0 INT1/INT2 reach only TP10/TP13
 						 * through R21/R22, both marked DNP, so no interrupt leaves the
 						 * board; and the FPC's single camera GPIO is already spent on
 						 * CAM_EN. Enabling this node as it stands buys a probe failure in
@@ -525,9 +529,8 @@
 					};
 				};
 
-				/* The archived overlay opened this as &pinctrl, which cannot
-				 * resolve: R39.2.1 has no "pinctrl" label anywhere in its device
-				 * tree sources. The node is pinmux@2430000, labelled "pinmux".
+				/* Labelled "pinmux", not "pinctrl" -- R39.2.1 has no "pinctrl"
+				 * label anywhere in its device tree sources.
 				 */
 				pinmux@2430000 {
 					cef168_i2c1_pins: cef168-i2c1-pins {

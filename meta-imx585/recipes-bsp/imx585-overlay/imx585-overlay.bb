@@ -7,9 +7,7 @@ HOMEPAGE = "https://github.com/NathanHowell/imx585-v4l2-driver"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://imx585-overlay.dts;beginline=1;endline=1;md5=fcab174c20ea2e2bc0be64b493708266"
 
-# Vendored, like the driver. This used to `require imx585-source.inc` and take the
-# DTS out of the driver's git tree with a patch on top; that tree is no longer
-# fetched, so the DTS lives here with the patch already applied.
+# Vendored, like the driver, since the tree the DTS came from is no longer fetched.
 #
 # Targets will127534's StarlightEye V2.0 (4-lane, 22-pin FPC) on cam1.
 #
@@ -18,8 +16,8 @@ LIC_FILES_CHKSUM = "file://imx585-overlay.dts;beginline=1;endline=1;md5=fcab174c
 # with `dtc -@`:
 #
 #   - cam1 (imx585_c, serial_c, 4 lanes, lane_polarity 0) is the enabled sensor;
-#     cam0 is disabled, being 2-lane on the p3768 carrier. These had to change in
-#     the file: __overrides__ is RPi firmware and inert under UEFI/extlinux.
+#     cam0 is disabled, being 2-lane on the p3768 carrier. Both are set in the
+#     file itself: __overrides__ is RPi firmware and inert under UEFI/extlinux.
 #   - imx585_inck, a fixed-clock at 24 MHz, is U5 (SX2M24.000M20F30TNN) driving
 #     IMX585 pin F4/INCK. The host clocks nothing; the node states a rate. Safe
 #     because the driver only clk_get_rate()s and clk_prepare_enable()s it. The
@@ -27,16 +25,15 @@ LIC_FILES_CHKSUM = "file://imx585-overlay.dts;beginline=1;endline=1;md5=fcab174c
 #     power_get() does devm_clk_get(dev, pdata->mclk_name).
 #   - link-frequencies = 720 MHz (1440 Mbps/lane), the value in the upstream RPi
 #     overlay and a real entry in imx585_link_freq_table.
-#   - csi_pixel_bit_depth = 12. The sensor is RAW12; "10" was a placeholder.
+#   - csi_pixel_bit_depth = 12, the sensor being RAW12.
 #   - On-board I2C peripherals on the cam1 leg: TMP117 at 0x48 enabled,
 #     ICM-42688-P at 0x68 present but disabled (its driver mandates an interrupt
 #     that the board does not route), CH32V003 IR-filter switch at 0x34
 #     documented without a node. See PORTING.md.
 #
-# Still inaccurate rather than broken: the vana/vdig/vddl regulator-fixed nodes
-# model all three rails as always-on, where upstream gates 3.3 V from the host
-# (startup-delay-us = 300000) and uses a dummy regulator for the two on-board
-# rails. Remaining items are in PORTING.md, "Still open on the DT".
+# The vana/vdig/vddl nodes are all always-on, which is accurate here: the p3768
+# camera FPC has no host gate, and vdig/vddl are generated on StarlightEye. See
+# the DTS for the detail, and PORTING.md for what remains open.
 SRC_URI = "file://imx585-overlay.dts"
 
 inherit devicetree
@@ -53,15 +50,14 @@ DEPENDS += "nvidia-kernel-oot"
 #     tegra/nv-public/include/{kernel,nvidia-oot}
 #     t23x/nv-public/include/{nvidia-oot,platforms}
 #
-# so `include/kernel` lives under tegra/, NOT under t23x/. The old list asked for
-# t23x/nv-public/include/kernel, which does not exist, and omitted both tegra/
-# include dirs. That was silent rather than fatal because expand_includes() below
-# only appends directories that exist, so the bogus entry was dropped and
-# <dt-bindings/clock/tegra234-clock.h> -- which this overlay includes -- was
-# instead picked up from KERNEL_INCLUDE. It happens to be byte-identical to
-# NVIDIA's copy today, so the overlay built correctly by luck. Listing the real
-# directories ahead of KERNEL_INCLUDE makes NVIDIA's copies win on purpose, which
-# is what we want if the two ever diverge.
+# so `include/kernel` lives under tegra/, NOT under t23x/.
+#
+# Getting this list wrong is silent rather than fatal: expand_includes() below only
+# appends directories that exist, so a path that does not resolve is simply
+# dropped and the header is picked up from KERNEL_INCLUDE instead. The kernel's
+# copy of <dt-bindings/clock/tegra234-clock.h> is byte-identical to NVIDIA's in
+# 6.8.12, so that substitution is invisible until the two diverge. Listing the
+# real directories ahead of KERNEL_INCLUDE makes NVIDIA's copies win on purpose.
 DT_INCLUDE = " \
     ${RECIPE_SYSROOT}/usr/src/device-tree/nvidia/tegra/nv-public \
     ${RECIPE_SYSROOT}/usr/src/device-tree/nvidia/tegra/nv-public/include/kernel \

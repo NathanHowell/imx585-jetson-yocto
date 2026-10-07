@@ -14,8 +14,7 @@
 # ${B}/out/nvidia-conftest/nvidia/, which is outside ${S}/nvidia-oot/include and
 # therefore never staged. The result is that the staged header set is not
 # self-contained: anything that includes camera_common.h from the sysroot dies
-# with "fatal error: nvidia/conftest.h: No such file or directory". That is
-# exactly how imx585-v4l2-driver's first build failed.
+# with "fatal error: nvidia/conftest.h: No such file or directory".
 #
 # These headers are not boilerplate and must not be stubbed. conftest.sh probes
 # this specific kernel tree for ~200 API shapes (v4l2_subdev_pad_ops_struct_has_*,

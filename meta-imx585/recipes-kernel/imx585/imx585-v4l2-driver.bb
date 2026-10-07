@@ -10,26 +10,23 @@ HOMEPAGE = "https://github.com/NathanHowell/imx585-v4l2-driver"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://imx585.c;beginline=1;endline=1;md5=50d2ba0afecd20f74c12a4bdbcfcfe61"
 
-# The source is vendored, not fetched. The only copy of the tegracam conversion
-# was a git bundle in oe4t-config/archive/ -- one file on one disk, which is the
-# failure mode this repo was created to fix. It is checked in here so the fixes
-# in PORTING.md land as reviewable commits against a known baseline.
+# The source is vendored, not fetched: the only copy of the tegracam conversion is
+# a git bundle in oe4t-config/archive/, which is the single-disk failure mode this
+# repo exists to avoid.
 #
-# Baseline: 13947db8c5bbd5d18694f5a2de93a625e957c928 ("imx585: seed
+# Provenance: 13947db8c5bbd5d18694f5a2de93a625e957c928 ("imx585: seed
 # sensor_mode_properties for tegracam"), devtool branch tip of
-# imx585-v4l2-driver-devtool.bundle, copied verbatim.
+# imx585-v4l2-driver-devtool.bundle.
 SRC_URI = " \
     file://imx585.c \
     file://Makefile \
 "
 
-# Our own version, not a revision of anything. "1.0+git13947db" was wrong once the
-# first fix landed: the +git<sha> form states that the source *is* that commit,
-# which it no longer is, and it would keep claiming so however far we diverged.
-# There is no upstream Jetson/tegracam IMX585 driver to track -- see PORTING.md,
-# "Maintenance model: this is the upstream". The archived commit the source started
-# from is recorded in the SRC_URI comment above, which is the right place for
-# provenance. Bump this when the driver changes meaningfully.
+# Our own version, not a revision of anything. A +git<sha> suffix would claim the
+# source *is* that commit, and there is no upstream Jetson/tegracam IMX585 driver
+# to track -- see PORTING.md, "Maintenance model: this is the upstream".
+# Provenance belongs in the SRC_URI comment above. Bump this when the driver
+# changes meaningfully.
 PV = "1.0"
 
 S = "${UNPACKDIR}"
@@ -77,10 +74,8 @@ EXTRA_OEMAKE += "NVIDIA_OOT_INCDIR=${NVIDIA_OOT_INCDIR}"
 #
 # That setVar runs at parse finalisation and overwrites any value the recipe
 # assigned, so the only way to get entries into it is to name a DEPENDS that
-# starts with "kernel-module-". Two earlier attempts both failed silently -- an
-# EXTRA_OEMAKE entry (overridden on the make command line) and then a plain
-# bitbake variable (overwritten by the setVar above). Both built a module whose
-# every tegracam_* symbol was undefined.
+# starts with "kernel-module-". Setting it directly, or via EXTRA_OEMAKE, builds a
+# module with every tegracam_* symbol undefined and no visible cause.
 #
 # Hence DEPENDS naming kernel-module-nvidia-kernel-oot, which the class turns into
 #     ${STAGING_INCDIR}/kernel-module-nvidia-kernel-oot/Module.symvers
