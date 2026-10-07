@@ -1,0 +1,480 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/dts-v1/;
+/plugin/;
+
+/* 720 MHz link frequency == 1440 Mbps per lane. This is the value in
+ * will127534's own Raspberry Pi overlay for StarlightEye
+ * (main:imx585-overlay.dts, link-frequencies = /bits/ 64 <720000000>),
+ * and a real entry in the driver's imx585_link_freq_table, so
+ * imx585_select_link_freq() matches it and programs regval 0x03.
+ *
+ * Was 1188000000 (594 MHz link), which nothing upstream used. Note
+ * Kurokesu's "fixed 720 Mbps" is a LANE RATE, i.e. a 360 MHz link --
+ * a different quantity, not this number.
+ */
+#define IMX585_LANE_RATE 1440000000ULL
+#define IMX585_LINK_FREQ (IMX585_LANE_RATE / 2)
+#define IMX585_MCLK_FREQ 24000000
+
+#define CAM0_PWDN	TEGRA234_MAIN_GPIO(H, 6)
+#define CAM1_PWDN	TEGRA234_MAIN_GPIO(AC, 0)
+#define CAM_I2C_MUX 	TEGRA234_AON_GPIO(CC, 3)
+
+#include <dt-bindings/clock/tegra234-clock.h>
+
+#include <dt-bindings/tegra234-p3767-0000-common.h>
+
+/ {
+	overlay-name = "Camera IMX585 Dual";
+	jetson-header-name = "Jetson 24pin CSI Connector";
+	compatible = JETSON_COMPATIBLE_P3768; /* [1] Orin Nano carrier */
+
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			imx585_vana: regulator-imx585-vana {
+				compatible = "regulator-fixed";
+				regulator-name = "imx585_vana";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				vin-supply = <&vdd_3v3_ao>;
+			};
+
+			imx585_vdig: regulator-imx585-vdig {
+				compatible = "regulator-fixed";
+				regulator-name = "imx585_vdig";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1100000>;
+				regulator-always-on;
+				vin-supply = <&vdd_3v3_ao>;
+			};
+
+			/* U5, SX2M24.000M20F30TNN: StarlightEye's own 24.000 MHz
+			 * oscillator, whose Out drives IMX585 pin F4 (INCK). The host
+			 * clocks nothing here, so this node exists to STATE the rate, not
+			 * to drive a clock -- which is all the driver needs, since
+			 * imx585_init_inck_sel() just calls clk_get_rate() and looks the
+			 * result up in imx585_inck_table (24000000 -> inck_sel 0x04).
+			 */
+			imx585_inck: clock-imx585-inck {
+				compatible = "fixed-clock";
+				#clock-cells = <0>;
+				clock-frequency = <IMX585_MCLK_FREQ>;
+				clock-output-names = "imx585-inck";
+			};
+
+			imx585_vddl: regulator-imx585-vddl {
+				compatible = "regulator-fixed";
+				regulator-name = "imx585_vddl";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-always-on;
+				vin-supply = <&vdd_1v8_ao>;
+			};
+
+			tegra-capture-vi  {
+				num-channels = <2>;
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						reg = <0>;
+						imx585_vi_in0: endpoint {
+							port-index = <1>;
+							bus-width = <4>; /* 4 lanes default */
+							data-lanes = <1 2 3 4>; /* optional: specify lane mapping */
+							clock-lanes = <0>;  /* optional: specify clock lane */
+							remote-endpoint = <&imx585_csi_out0>;
+						};
+					};
+					port@1 {
+						reg = <1>;
+						imx585_vi_in1: endpoint {
+							port-index = <2>;
+							bus-width = <4>; /* 4 lanes default */
+							data-lanes = <1 2 3 4>; /* optional: specify lane mapping */
+							clock-lanes = <0>;  /* optional: specify clock lane */
+							remote-endpoint = <&imx585_csi_out1>;
+						};
+					};
+				};
+			};
+
+			tegra_cam_platform: tegra-camera-platform {
+				compatible = "nvidia, tegra-camera-platform";
+				num_csi_lanes = <8>;          /* two sensors × 4 lanes */
+				max_lane_speed = <2500000>;   /* 2.5 Gbps/lane default; SI dependent */
+				min_bits_per_pixel = <10>;
+				vi_peak_byte_per_pixel = <2>;
+				vi_bw_margin_pct = <25>;
+				max_pixel_rate = <600000000>; /* adjust to real mode table */
+				isp_peak_byte_per_pixel = <5>;
+				isp_bw_margin_pct = <25>;
+				modules {
+					module0 {
+						badge = "jakku_front_IMX585";
+						position = "front";
+						orientation = "1"; /* [12] 1 means upright; confirm physical rotation; driver uses readout_orientation too */
+						drivernode0 {
+							pcl_id = "v4l2_sensor";
+							sysfs-device-tree = "/sys/firmware/devicetree/base/bus@0/cam_i2cmux/i2c@0/imx585_a@1a"; /* [13] Ensure this path matches the overlay path below */
+						};
+					};
+					module1 {
+						badge = "jakku_rear_IMX585";
+						position = "rear";
+						orientation = "1";
+						drivernode0 {
+							pcl_id = "v4l2_sensor";
+							sysfs-device-tree = "/sys/firmware/devicetree/base/bus@0/cam_i2cmux/i2c@1/imx585_c@1a";
+						};
+					};
+				};
+			};
+			bus@0 {
+				host1x@13e00000 {
+					nvcsi@15a00000 {
+						num-channels = <2>;
+						#address-cells = <1>;
+						#size-cells = <0>;
+						channel@0 {
+							reg = <0>;
+							ports {
+								#address-cells = <1>;
+								#size-cells = <0>;
+								port@0 {
+									reg = <0>;
+									imx585_csi_in0: endpoint@0 {
+										port-index = <1>;
+										bus-width = <4>; /* 4 lanes */
+										remote-endpoint = <&imx585_out0>;
+									};
+								};
+								port@1 {
+									reg = <1>;
+									imx585_csi_out0: endpoint@1 {
+										remote-endpoint = <&imx585_vi_in0>;
+									};
+								};
+							};
+						};
+						channel@1 {
+							reg = <1>;
+							ports {
+								#address-cells = <1>;
+								#size-cells = <0>;
+								port@0 {
+									reg = <0>;
+									imx585_csi_in1: endpoint@2 {
+										port-index = <2>;
+										bus-width = <4>; /* 4 lanes */
+										remote-endpoint = <&imx585_out1>;
+									};
+								};
+								port@1 {
+									reg = <1>;
+									imx585_csi_out1: endpoint@3 {
+										remote-endpoint = <&imx585_vi_in1>;
+									};
+								};
+							};
+						};
+					};
+				};
+				cam_i2cmux {
+					status = "okay";
+					compatible = "i2c-mux-gpio";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					mux-gpios = <&gpio_aon CAM_I2C_MUX GPIO_ACTIVE_HIGH>; /* [15] AON mux select */
+					i2c-parent = <&cam_i2c>; /* [16] Ensure label exists in base DT */
+
+					i2c@0 {
+						status = "okay";
+						reg = <0>;
+						#address-cells = <1>;
+						#size-cells = <0>;
+
+						/* -------- cam0 (enabled by default) -------- */
+						imx585_a: imx585_a@1a {
+							status = "disabled"; /* cam0 is 2-lane on p3768; StarlightEye is 4-lane */
+							reset-gpios = <&gpio CAM0_PWDN GPIO_ACTIVE_HIGH>;
+							compatible = "sony,imx585";
+							reg = <0x1a>;
+							devnode = "video0";
+							/* On-board oscillator -- see imx585_inck above. The name must match
+							 * `mclk`: imx585_parse_dt() reads that string into pdata->mclk_name
+							 * and imx585_power_get() does devm_clk_get(dev, pdata->mclk_name).
+							 * power_on() only clk_prepare_enable()s it and never clk_set_rate(),
+							 * so a fixed-clock is safe here.
+							 */
+							clocks = <&imx585_inck>;
+							clock-names = "inck";
+							mclk = "inck";
+							vana-supply = <&imx585_vana>;
+							vdig-supply = <&imx585_vdig>;
+							vddl-supply = <&imx585_vddl>;
+							/* Active area for IMX585 */
+							physical_w = "11.13";
+							physical_h = "6.26";
+							sensor_model = "imx585";
+							use_sensor_mode_id = "true";
+
+							imx585_a_mode0: mode0 {
+								mclk_khz = "24000";
+								num_lanes = "4";  /* default 4 lanes */
+								tegra_sinterface = "serial_b";
+								phy_mode = "DPHY";
+								discontinuous_clk = "no";
+								dpcm_enable = "false";
+								cil_settletime = "0";
+								lane_polarity = "6";  /* board‑specific; keep */
+								active_w = "3856";
+								active_h = "2180";
+								mode_type = "bayer";
+								pixel_phase = "rggb";
+								csi_pixel_bit_depth = "12";	/* IMX585 RAW12; was 10 */
+								readout_orientation = "90";
+								line_length = "4267";       /* pixel_clock * HMAX / 74.25MHz; 480e6*660/74.25e6 */
+								mclk_multiplier = "80";
+								pix_clk_hz = "480000000";   /* link 720MHz * 2 * 4 lanes / 12 bpp */
+								gain_factor = "10";   /* dB*10 */
+								framerate_factor = "1000000";
+								exposure_factor = "1000000";
+								min_gain_val = "0";   /* 0 dB */
+								max_gain_val = "720"; /* 72 dB, the analog limit (240 * 0.3 dB) */
+								step_gain_val = "3";  /* 0.3 dB */
+								default_gain = "0";   /* unity */
+								min_hdr_ratio = "1";
+								max_hdr_ratio = "1";
+								min_framerate = "1000000";
+								max_framerate = "50000000"; /* 50 fps at 720MHz link */
+								step_framerate = "1";
+								default_framerate = "50000000";
+								min_exp_time = "10";
+								max_exp_time = "33333";
+								step_exp_time = "1";
+								default_exp_time = "10000";
+								embedded_metadata_height = "0"; /* 0x303a=0x03 disables embedded data */
+							};
+
+							ports {
+								#address-cells = <1>;
+								#size-cells = <0>;
+								port@0 {
+									reg = <0>;
+									imx585_out0: endpoint {
+										status = "okay";
+										port-index = <1>;
+										bus-width = <4>; /* 4 lanes */
+										/* f_link = IMX585_LANE_RATE / 2 = 720 MHz (CSI-2 DDR clock) */
+										link-frequencies = /bits/ 64 <IMX585_LINK_FREQ>;
+										data-lanes = <1 2 3 4>; /* optional: specify lane mapping */
+										remote-endpoint = <&imx585_csi_in0>;
+									};
+								};
+							};
+						};
+					};
+
+					i2c@1 {
+						status = "okay";
+						reg = <1>;
+						#address-cells = <1>;
+						#size-cells = <0>;
+
+						/* -------- cam1 (disabled by default) -------- */
+						imx585_c: imx585_c@1a {
+							status = "okay"; /* cam1 = serial_c, the 4-lane connector -- StarlightEye goes here */
+							reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_HIGH>;
+							compatible = "sony,imx585";
+							reg = <0x1a>;
+							devnode = "video1";
+							/* On-board oscillator -- see imx585_inck above. The name must match
+							 * `mclk`: imx585_parse_dt() reads that string into pdata->mclk_name
+							 * and imx585_power_get() does devm_clk_get(dev, pdata->mclk_name).
+							 * power_on() only clk_prepare_enable()s it and never clk_set_rate(),
+							 * so a fixed-clock is safe here.
+							 */
+							clocks = <&imx585_inck>;
+							clock-names = "inck";
+							mclk = "inck";
+							vana-supply = <&imx585_vana>;
+							vdig-supply = <&imx585_vdig>;
+							vddl-supply = <&imx585_vddl>;
+							physical_w = "11.13";
+							physical_h = "6.26";
+							sensor_model = "imx585";
+							use_sensor_mode_id = "true";
+
+							imx585_c_mode0: mode0 {
+								mclk_khz = "24000";
+								num_lanes = "4";  /* default 4 lanes */
+								tegra_sinterface = "serial_c";
+								phy_mode = "DPHY";
+								discontinuous_clk = "no";
+								dpcm_enable = "false";
+								cil_settletime = "0";
+								lane_polarity = "0";
+								active_w = "3856";
+								active_h = "2180";
+								mode_type = "bayer";
+								pixel_phase = "rggb";
+								csi_pixel_bit_depth = "12";	/* IMX585 RAW12; was 10 */
+								readout_orientation = "90";
+								line_length = "4267";       /* pixel_clock * HMAX / 74.25MHz */
+								mclk_multiplier = "80";
+								pix_clk_hz = "480000000";   /* link 720MHz * 2 * 4 lanes / 12 bpp */
+								gain_factor = "10";   /* dB*10 */
+								framerate_factor = "1000000";
+								exposure_factor = "1000000";
+								min_gain_val = "0";   /* 0 dB */
+								max_gain_val = "720"; /* 72 dB */
+								step_gain_val = "3";  /* 0.3 dB */
+								default_gain = "0";   /* unity */
+								min_hdr_ratio = "1";
+								max_hdr_ratio = "1";
+								min_framerate = "1000000";
+								max_framerate = "50000000"; /* 50 fps at 720MHz link */
+								step_framerate = "1";
+								default_framerate = "50000000";
+								min_exp_time = "10";
+								max_exp_time = "33333";
+								step_exp_time = "1";
+								default_exp_time = "10000";
+								embedded_metadata_height = "0"; /* 0x303a=0x03 disables embedded data */
+							};
+
+							ports {
+								#address-cells = <1>;
+								#size-cells = <0>;
+								port@0 {
+									reg = <0>;
+									imx585_out1: endpoint {
+										status = "okay";
+										port-index = <2>;
+										bus-width = <4>; /* 4 lanes */
+										/* f_link = IMX585_LANE_RATE / 2 = 720 MHz (CSI-2 DDR clock) */
+										link-frequencies = /bits/ 64 <IMX585_LINK_FREQ>;
+										data-lanes = <1 2 3 4>; /* optional: specify lane mapping */
+										remote-endpoint = <&imx585_csi_in1>;
+									};
+								};
+							};
+						};
+
+						/* ---------------------------------------------------------------
+						 * StarlightEye on-board I2C peripherals.
+						 *
+						 * These sit on the sensor's 1.8 V I2C, behind the TCA9406 level
+						 * translator (U9) that bridges to the 3.3 V SCL/SDA on the 22-pin
+						 * FPC -- so from the Jetson's side they are simply more devices on
+						 * this mux leg. Addresses are annotated on StarlightEye's own
+						 * schematic (V2.0, 2025-07-26, KiCad 8.0.4):
+						 *
+						 *   0x1a  IMX585            U4
+						 *   0x34  IR filter switch  U7   CH32V003, no kernel driver
+						 *   0x48  TMP117            U6
+						 *   0x68  ICM-42688-P       U11
+						 *
+						 * On i2c@1 (cam1) only, not i2c@0: StarlightEye is a 4-lane board
+						 * and cam0 on the p3768 carrier is 2-lane.
+						 *
+						 * imx585_vddl is the +1V8 rail. It is named for the sensor, but on
+						 * this board that rail is LP5907MFX-1.8 (U2) feeding the whole
+						 * 1.8 V domain, these peripherals included.
+						 * ---------------------------------------------------------------
+						 */
+
+						/* U6. vcc-supply is REQUIRED by ti,tmp117.yaml, not optional. No
+						 * interrupt: the binding defines no interrupt property at all, and
+						 * ALERT is not routed off-board. This is the die temperature beside
+						 * the sensor, which is what dark current tracks. */
+						tmp117@48 {
+							compatible = "ti,tmp117";
+							reg = <0x48>;
+							vcc-supply = <&imx585_vddl>;
+							status = "okay";
+						};
+
+						/* U11, ICM-42688-P 6-axis IMU.
+						 *
+						 * DISABLED DELIBERATELY, and it cannot just be switched on.
+						 * inv_icm42600_core_probe() ends its IRQ lookup with
+						 *
+						 *     if (irq < 0)
+						 *             return dev_err_probe(dev, irq,
+						 *                     "error missing INT1 interrupt");
+						 *
+						 * so the driver refuses to probe without an interrupt -- there is no
+						 * polled mode. On StarlightEye V2.0 INT1/INT2 reach only TP10/TP13
+						 * through R21/R22, both marked DNP, so no interrupt leaves the
+						 * board; and the FPC's single camera GPIO is already spent on
+						 * CAM_EN. Enabling this node as it stands buys a probe failure in
+						 * dmesg every boot and no IIO device.
+						 *
+						 * To actually use it: populate R21/R22, get INT1 onto a Jetson GPIO,
+						 * then add interrupt-parent/interrupts here with
+						 * interrupt-names = "INT1" (the driver looks that name up first)
+						 * and flip status to okay.
+						 */
+						icm42688@68 {
+							compatible = "invensense,icm42688";
+							reg = <0x68>;
+							vdd-supply = <&imx585_vddl>;
+							vddio-supply = <&imx585_vddl>;
+							status = "disabled";
+						};
+
+						/* 0x34 -- CH32V003 (U7) IR-cut filter switch, driving the filter
+						 * actuator through a DRV8837C (U8). Deliberately has NO node: there
+						 * is no kernel driver for it and inventing a compatible would buy
+						 * nothing. It is a single-byte write -- the firmware's main.c does
+						 * IR_DIR = (I2C1->DATAR == 0x01) -- so drive it from userspace on
+						 * this leg's /dev/i2c-N. Recorded here so the address is not handed
+						 * to something else.
+						 */
+					};
+				};
+
+				/* Hold sensors in PWDN at boot */
+				gpio@6000d000 {
+					camera-control-output-low {
+						gpio-hog;
+						output-low;
+						gpios = <CAM1_PWDN 0  CAM0_PWDN 0>;
+						label = "cam1-pwdn", "cam0-pwdn";
+					};
+				};
+			};
+		};
+	};
+
+	/* ----------------------------------------------------------- */
+	/* Boot‑time overrides                                         */
+	/* ----------------------------------------------------------- */
+	__overrides__ {
+		/* Enable/disable cam0 (default: enabled) */
+		cam0 = <&imx585_a>, "status";
+		/* Values: "okay" to enable, "disabled" to disable */
+
+		/* Enable/disable cam1 (default: disabled) */
+		cam1 = <&imx585_c>, "status";
+		/* Values: "okay" to enable, "disabled" to disable */
+
+		/* One‑shot debug preset: force 2 lanes + 1.5 Gbps/lane and adjust platform lane total */
+		debug_safe =
+				<&imx585_a_mode0>,        "num_lanes:2",
+				<&imx585_c_mode0>,        "num_lanes:2",
+				<&imx585_vi_in0>,         "bus-width:2",
+				<&imx585_vi_in1>,         "bus-width:2",
+				<&imx585_csi_in0>,        "bus-width:2",
+				<&imx585_csi_in1>,        "bus-width:2",
+				<&imx585_out0>,           "bus-width:2",
+				<&imx585_out1>,           "bus-width:2",
+				<&tegra_cam_platform>,    "num_csi_lanes:4",
+				<&tegra_cam_platform>,    "max_lane_speed:1500000";
+	};
+};
