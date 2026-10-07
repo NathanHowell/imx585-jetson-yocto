@@ -39,6 +39,10 @@ kas/build.sh build kas/imx585.yml:kas/include/docker.yml             # minimal +
 kas/build.sh build kas/imx585.yml:kas/include/kernel-linux-yocto.yml # mainline 6.18
 ```
 
+The `justfile` at the repo root wraps the common cases: `just build` (4 threads,
+via `kas/lowmem.conf`), `just extract`, and the `just flash*` recipes around
+`initrd-flash`. `just` lists them.
+
 **Use `kas/build.sh`, not `kas` directly.** `KAS_WORK_DIR` (where the layers are
 cloned) and `KAS_BUILD_DIR` cannot be expressed in `local.conf`, and both default
 to the current directory — so a bare `kas build` in this tree clones several GB of
