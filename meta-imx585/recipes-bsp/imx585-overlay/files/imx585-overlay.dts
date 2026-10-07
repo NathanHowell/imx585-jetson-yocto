@@ -22,6 +22,7 @@
 #define CAM_I2C_MUX 	TEGRA234_AON_GPIO(CC, 3)
 
 #include <dt-bindings/clock/tegra234-clock.h>
+#include <dt-bindings/pinctrl/pinctrl-tegra.h>
 
 #include <dt-bindings/tegra234-p3767-0000-common.h>
 
@@ -63,6 +64,7 @@
 				vin-supply = <&vdd_3v3_ao>;
 			};
 
+			/* U3, on-board, from the FPC 3V3. */
 			imx585_vdig: regulator-imx585-vdig {
 				compatible = "regulator-fixed";
 				regulator-name = "imx585_vdig";
@@ -314,10 +316,29 @@
 						#address-cells = <1>;
 						#size-cells = <0>;
 
-						/* -------- cam1 (disabled by default) -------- */
+						/* -------- cam1: the StarlightEye -------- */
 						imx585_c: imx585_c@1a {
 							status = "okay"; /* cam1 = serial_c, the 4-lane connector -- StarlightEye goes here */
 							reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_HIGH>;
+							/* The standard V4L2 association between a sensor and its
+							 * focus actuator. The driver resolves this phandle and
+							 * registers a sub-notifier for it, which is what gets the
+							 * CEF168 bound to VI's v4l2_device and therefore given a
+							 * /dev/v4l-subdev node -- VI itself only discovers subdevs
+							 * by walking of_graph endpoints, and a lens has none.
+							 *
+							 * Consequence worth knowing: once this phandle is here and
+							 * points at an enabled node, VI's notifier cannot complete
+							 * until that subdev binds (v4l2_async_nf_can_complete()
+							 * recurses into sub-notifiers), so a CEF168 whose *driver*
+							 * never loads means no /dev/video0 at all. The driver
+							 * guards against the node being disabled; it cannot guard
+							 * against kernel-module-cef168 being absent from the image.
+							 * cef168_probe() does no I2C, so a disconnected or
+							 * unresponsive controller still binds and the camera still
+							 * comes up -- focus writes just fail.
+							 */
+							lens-focus = <&cef168>;
 							compatible = "sony,imx585";
 							reg = <0x1a>;
 							devnode = "video1";
@@ -465,6 +486,57 @@
 						 * this leg's /dev/i2c-N. Recorded here so the address is not handed
 						 * to something else.
 						 */
+					};
+				};
+
+				/* CEF168 Canon EF lens controller, on the 40-pin header's
+				 * I2C1 rather than the camera FPC.
+				 *
+				 * Why not on cam_i2cmux/i2c@1 beside the sensor: that mux is
+				 * GPIO-switched, so the lens would only be addressable while
+				 * that leg is selected, and autofocus traffic would share the
+				 * segment with sensor register writes during capture. A
+				 * contrast-detect AF loop runs continuously while streaming,
+				 * which is exactly when that contention would matter.
+				 *
+				 * gen1_i2c is status = "disabled" in tegra234.dtsi and no
+				 * p3768/p3767 platform .dtsi enables it, so the controller has
+				 * to be enabled here -- this is not a no-op.
+				 *
+				 * Header wiring: pin 1 3V3, pin 3 SDA (gen1_i2c_sda_pi4),
+				 * pin 5 SCL (gen1_i2c_scl_pi3), pin 6 GND.
+				 *
+				 * vcc-supply is required by the driver (devm_regulator_get of
+				 * "vcc" then regulator_enable, in probe). Header pin 1 is the
+				 * carrier's always-on 3V3, so that is what it points at.
+				 */
+				i2c@3160000 {
+					status = "okay";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					pinctrl-names = "default";
+					pinctrl-0 = <&cef168_i2c1_pins>;
+
+					cef168: cef168@d {
+						compatible = "pinefeat,cef168";
+						reg = <0x0d>;
+						vcc-supply = <&vdd_3v3_ao>;
+						status = "okay";
+					};
+				};
+
+				/* The archived overlay opened this as &pinctrl, which cannot
+				 * resolve: R39.2.1 has no "pinctrl" label anywhere in its device
+				 * tree sources. The node is pinmux@2430000, labelled "pinmux".
+				 */
+				pinmux@2430000 {
+					cef168_i2c1_pins: cef168-i2c1-pins {
+						nvidia,pins = "gen1_i2c_sda_pi4",
+							      "gen1_i2c_scl_pi3";
+						nvidia,function = "i2c1";
+						nvidia,tristate = <TEGRA_PIN_DISABLE>;
+						nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+						nvidia,pull = <TEGRA_PIN_PULL_UP>;
 					};
 				};
 
