@@ -26,11 +26,22 @@ repos:
     layers:
       meta:
 
-  # Not a layer. kas locates bitbake by finding bin/bitbake in a checked-out
-  # repo. wrynose sets BB_MIN_VERSION = "2.18.0", hence this branch.
+  # kas locates bitbake by finding bin/bitbake in a checked-out repo. wrynose
+  # sets BB_MIN_VERSION = "2.18.0", hence this branch.
+  #
+  # `layers: {.: disabled}` is required, not decoration. Omitting the `layers`
+  # key does NOT mean "this repo is not a layer" -- kas/repos.py does
+  #
+  #     layers_dict = repo_config.get('layers', {'': None})
+  #
+  # so the default is the repo root *being* a layer. Without this, bitbake lands
+  # in BBLAYERS and every parse dies with
+  #   file .../layers/bitbake/conf/layer.conf not found
   bitbake:
     url: https://git.openembedded.org/bitbake
     branch: "2.18"
+    layers:
+      .: disabled
 
   meta-tegra:
     url: https://github.com/OE4T/meta-tegra.git

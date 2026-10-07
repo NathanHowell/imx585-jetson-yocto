@@ -30,22 +30,132 @@ meta-tegra-community only has an `nvidia-docker-tests` recipe.
 ## Usage
 
 ```sh
-pipx install kas          # not currently installed on this machine
+sudo apt install kas      # Debian 13 ships 4.8.1; no pipx needed
 
-kas build kas/imx585.yml                                     # bring-up image
-kas shell kas/imx585.yml                                     # bitbake prompt
-kas build kas/imx585.yml:kas/include/podman.yml               # minimal + podman
-kas build kas/imx585.yml:kas/include/docker.yml               # minimal + docker
-kas build kas/imx585.yml:kas/include/kernel-linux-yocto.yml   # mainline 6.18
+kas/build.sh build kas/imx585.yml                                   # bring-up image
+kas/build.sh shell kas/imx585.yml                                   # bitbake prompt
+kas/build.sh build kas/imx585.yml:kas/include/podman.yml             # minimal + podman
+kas/build.sh build kas/imx585.yml:kas/include/docker.yml             # minimal + docker
+kas/build.sh build kas/imx585.yml:kas/include/kernel-linux-yocto.yml # mainline 6.18
 ```
 
-Set `DL_DIR` and `SSTATE_DIR` in `imx585.yml` before the first build. The old
-tree reached 266G because they defaulted into it.
+**Use `kas/build.sh`, not `kas` directly.** `KAS_WORK_DIR` (where the layers are
+cloned) and `KAS_BUILD_DIR` cannot be expressed in `local.conf`, and both default
+to the current directory — so a bare `kas build` in this tree clones several GB of
+openembedded-core and meta-tegra into the working copy, on a `/home` with ~22G
+free. The wrapper pins them and refuses to run if `/build` is not mounted.
+
+### Storage
+
+Everything heavy is on `/build` (`vg0/tiler-scratch`, xfs, 315G), and all of it
+is declared rather than defaulted — the old tree reached 266G because `DL_DIR`,
+`SSTATE_DIR` and `TMPDIR` all defaulted into it.
+
+| | | set in |
+|---|---|---|
+| `DL_DIR` | `/build/yocto/downloads` | `imx585.yml` |
+| `SSTATE_DIR` | `/build/yocto/sstate-cache` | `imx585.yml` |
+| `TMPDIR` | `/build/yocto/tmp` | `imx585.yml` |
+| `KAS_WORK_DIR` | `/build/yocto/layers` | `build.sh` |
+| `KAS_BUILD_DIR` | `/build/yocto/build` | `build.sh` |
+
+315G does not comfortably hold a full JetPack build with CUDA *plus* downloads
+and sstate, so `imx585.yml` sets `INHERIT += "rm_work"` with an `RM_WORK_EXCLUDE`
+covering `imx585-v4l2-driver`, `cef168-v4l2-driver`, `nvidia-kernel-oot` and
+`linux-noble-nvidia-tegra`. Those four are the ones being debugged; reaping their
+work directories would make `devtool modify` and post-mortem inspection
+impossible, which is the entire current activity.
+
+### Cheap failures first
+
+A cold build is a multi-hour, ~200G affair. Climb this ladder instead of going
+straight to `build`:
+
+```sh
+kas/build.sh dump kas/imx585.yml            # clones layers, resolves config
+kas/build.sh shell kas/imx585.yml -c "bitbake -p"          # parse every recipe
+kas/build.sh shell kas/imx585.yml -c "bitbake --runall=fetch imx585-console-image"
+```
+
+The fetch pass matters: it is not established whether every JetPack 7.2.1 BSP
+component is directly fetchable, or whether some are SDK-Manager-gated and need
+manual placement in `DL_DIR`. Twenty minutes to find out beats four hours.
+
+## Flashing
+
+R39.2 is `initrd-flash` only: the host RCM-boots a purpose-built Linux image over
+USB, and *that* image reads partition content from the host and writes it to the
+target's storage. All of the below is from `docs/Flashing.md` and
+`docs/Flashing-without-sudo.md` in meta-tegra `322bc23`.
+
+The artifact is `IMAGE_FSTYPES += "tegraflash-tar.zst"` (`tegra-common.inc`), so:
+
+```sh
+mkdir -p /build/flashing && cd /build/flashing
+tar xf /build/yocto/tmp/deploy/images/jetson-orin-nano-devkit-nvme/\
+imx585-console-image-jetson-orin-nano-devkit-nvme.tegraflash-tar.zst
+lsusb -d 0955:7523      # Orin Nano in recovery mode
+./initrd-flash
+```
+
+### Host requirements
+
+| | |
+|---|---|
+| `dtc`, `cpp`, `bash`, Python 3, `tar`, `zstd` | present |
+| `udisksctl` (`udisks2`) | present |
+| `sgdisk` (`gdisk`) | present (in `/sbin`, so not on a plain user `PATH` — check with `command -v sgdisk \|\| ls /sbin/sgdisk`) |
+| `bmaptool` (`bmap-tools`) | present. Not strictly required, but without it flashing a moderately large rootfs "will take an extremely long time" |
+| x86-64, bare metal | yes. NVIDIA's low-level tools are binary-only x86-64, and virtualization interferes with the USB link |
+| direct USB port | **not a hub.** "Random failures may occur if you connect via an external hub" |
+| `tlp` absent | yes, not installed — it interferes with flashing |
+| automount disabled | not applicable, this host is headless with no GNOME |
+
+### sudo is not required
+
+`initrd-flash` invokes `sudo` itself for the few steps that need it (`bmaptool`,
+and the NVIDIA unified script on Thor). Running the whole thing under `sudo` is a
+troubleshooting fallback, not the normal path. This account is already in `disk`
+and `plugdev`; the remaining piece is a udev rule so the recovery-mode device is
+accessible without root:
+
+```
+# /etc/udev/rules.d/70-jetson-orin-nano.rules
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7523", GROUP="plugdev", TAG+="uaccess"
+```
+
+### What to flash, and when
+
+`initrd-flash` with no arguments writes **both** the QSPI boot firmware and the
+external rootfs. That is what the first flash has to do, for two reasons: the
+devkit's shipped QSPI predates R39, and `OPTEE_ENABLE_FTPM = "1"` changes the
+OP-TEE binary in the TOS partition, which is firmware rather than rootfs.
+
+Afterwards:
+
+| | |
+|---|---|
+| `--external-only` | skip the firmware. The normal flag once the QSPI is current. |
+| `--qspi-only` | firmware only. |
+| `./doexternal.sh /dev/sdX` | write the NVMe **directly from the host**, with the drive attached here rather than to the Jetson. Worth knowing for the driver debug loop — no RCM dance per iteration. |
+
+`USE_REDUNDANT_FLASH_LAYOUT_DEFAULT = "1"` means A/B, so both rootfs slots get
+written.
+
+### Serial console
+
+Not required, but the troubleshooting advice assumes it. On the Orin Nano devkit
+the debug UART is on the **button header as 3.3 V TTL** — it is not exported over
+USB the way the AGX Orin and AGX Thor kits do it, so it needs a USB-serial
+adapter. `initrd-flash` itself prints only high-level status and writes
+`log.initrd-flash.<timestamp>`; the interesting failures are visible on the
+target.
 
 ## Files
 
 | | |
 |---|---|
+| `build.sh` | wrapper pinning `KAS_WORK_DIR`/`KAS_BUILD_DIR` to `/build`. Use this. |
 | `imx585.yml` | the build: distro, machine, target, `local.conf` |
 | `include/base.yml` | layer pins shared by all configs |
 | `include/kernel-linux-yocto.yml` | opt in to mainline linux-yocto 6.18 |

@@ -23,11 +23,35 @@ local_conf_header:
     # Keep dtc symbols so device tree overlays can be applied at boot.
     KERNEL_DTC_FLAGS += "-@"
 
-    # Set this to your public key to get a usable login on first boot.
-    # SSH_USER_AUTHORIZED_KEY = "ssh-ed25519 AAAA..."
+    # Login on first boot, for the "orin" user created by imx585-ssh-user.inc.
+    # ECDSA P-256 because this key lives in a MacBook Secure Enclave via
+    # Secretive, and the Secure Enclave does P-256 only -- ed25519 is not an
+    # option for it, so dropbear in imx585-minimal-image has to accept ECDSA.
+    SSH_USER_AUTHORIZED_KEY = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKIzFWcXbd6VtLEg+1bABEucb5DsddLEftRu6OelAuptTykhxPbtUVgPCAnFAWoy3LqPHNpZehepn/UbP2Ha9QI= black@secretive.Nathan’s-MacBook-Pro-(2).local"
 
   shared: |
-    # Point these at persistent storage; they are the difference between a
-    # 4-hour rebuild and a 4-minute one. The old tree's build dir was 266G.
-    # DL_DIR = "/path/to/yocto/downloads"
-    # SSTATE_DIR = "/path/to/yocto/sstate-cache"
+    # Build output on /build (vg0/tiler-scratch, xfs, 315G). These are the
+    # difference between a 4-hour rebuild and a 4-minute one, and the reason the
+    # old tree reached 266G was that all three defaulted into it.
+    DL_DIR = "/build/yocto/downloads"
+    SSTATE_DIR = "/build/yocto/sstate-cache"
+    TMPDIR = "/build/yocto/tmp"
+
+    # 12 cores, 125G RAM.
+    BB_NUMBER_THREADS = "12"
+    PARALLEL_MAKE = "-j 12"
+
+    # The hash-equivalence database defaults into the build directory, which
+    # bitbake warns about whenever SSTATE_DIR is shared: a per-build database
+    # cannot match hashes against sstate written by another build, so sstate
+    # reuse quietly stops working. Beside the sstate it describes is bitbake's
+    # own recommendation.
+    BB_HASHSERVE_DB_DIR = "${SSTATE_DIR}"
+
+    # /build is 315G and a full JetPack build with CUDA does not comfortably fit
+    # alongside DL_DIR and SSTATE_DIR, so work directories are reaped -- except
+    # for the four recipes that are actually being debugged. Dropping the
+    # exclusion list would make `devtool modify` and post-mortem builds on the
+    # sensor driver impossible, which is the whole activity right now.
+    INHERIT += "rm_work"
+    RM_WORK_EXCLUDE += "imx585-v4l2-driver cef168-v4l2-driver nvidia-kernel-oot linux-noble-nvidia-tegra"
