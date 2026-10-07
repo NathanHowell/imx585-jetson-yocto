@@ -440,9 +440,9 @@ struct imx585 {
 	 * (dB*10, microseconds, micro-fps). tegracam only forwards a control write
 	 * while the sensor is powered, and only re-applies the current values at
 	 * stream start when the VI channel's override_enable control is on, which
-	 * it is not by default. So the driver keeps its own copy and writes all
-	 * three itself in imx585_start_streaming(), after the mode tables have
-	 * reset VMAX. */
+	 * it is not by default. So the driver keeps its own copy, refreshes it
+	 * from the controls and writes all three itself in
+	 * imx585_start_streaming(), after the mode tables have reset VMAX. */
 	s64 gain;
 	s64 exposure_us;
 	s64 frame_rate;
@@ -536,6 +536,11 @@ static int imx585_power_on(struct camera_common_data *s_data)
 	usleep_range(IMX585_STREAM_DELAY_US,
 		     IMX585_STREAM_DELAY_US + IMX585_STREAM_DELAY_RANGE_US);
 
+	/* tegracam asks g_input_status, i.e. this state, before forwarding any
+	 * control write to set_*(); the framework never sets it itself. Left at
+	 * SWITCH_OFF every gain/exposure/frame-rate write is silently dropped. */
+	s_data->power->state = SWITCH_ON;
+
 	return 0;
 
 disable_regulators:
@@ -547,6 +552,8 @@ static int imx585_power_off(struct camera_common_data *s_data)
 {
 	struct tegracam_device *tc_dev = to_tegracam_device(s_data);
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
+
+	s_data->power->state = SWITCH_OFF;
 
 	if (priv->reset_gpio)
 		gpiod_set_value_cansleep(priv->reset_gpio, 1);
@@ -968,12 +975,38 @@ static int imx585_apply_controls(struct imx585 *priv)
 	return imx585_apply_exposure(priv);
 }
 
+/* tegracam drops control writes while the sensor is powered off, so a value set
+ * before the stream starts reaches the v4l2 control but never set_*(). Take the
+ * controls' current values as the request. Called without priv->lock: the
+ * getters take the control handler lock, which set_*() runs under. */
+static void imx585_sync_controls(struct imx585 *priv)
+{
+	struct v4l2_ctrl_handler *hdl = priv->s_data->ctrl_handler;
+	struct v4l2_ctrl *gain = v4l2_ctrl_find(hdl, TEGRA_CAMERA_CID_GAIN);
+	struct v4l2_ctrl *exposure = v4l2_ctrl_find(hdl, TEGRA_CAMERA_CID_EXPOSURE);
+	struct v4l2_ctrl *frame_rate = v4l2_ctrl_find(hdl, TEGRA_CAMERA_CID_FRAME_RATE);
+	s64 val;
+
+	if (gain)
+		priv->gain = v4l2_ctrl_g_ctrl_int64(gain);
+
+	val = exposure ? v4l2_ctrl_g_ctrl_int64(exposure) : 0;
+	if (val > 0)
+		priv->exposure_us = val;
+
+	val = frame_rate ? v4l2_ctrl_g_ctrl_int64(frame_rate) : 0;
+	if (val > 0)
+		priv->frame_rate = val;
+}
+
 static int imx585_start_streaming(struct tegracam_device *tc_dev)
 {
 	struct imx585 *priv = tegracam_to_imx585(tc_dev);
 	struct camera_common_data *s_data = tc_dev->s_data;
 	const struct imx585_mode *mode;
 	int err;
+
+	imx585_sync_controls(priv);
 
 	mutex_lock(&priv->lock);
 

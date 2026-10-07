@@ -348,6 +348,16 @@ sensor, so the controls reported the minimums while the sensor ran the DT
 defaults cached in `priv`. `imx585_seed_controls()` writes the defaults into the
 controls at probe so the two agree.
 
+A third defect hid behind the stream-start fix above: `tegracam_set_ctrls`
+gates every control write on `g_input_status`, which reports
+`s_data->power->state`, and nothing in the framework ever sets that field. It
+stayed `SWITCH_OFF`, so the `set_*()` callbacks never ran and `priv` never left
+the DT defaults. `imx585_power_on()` now sets `SWITCH_ON` and `imx585_power_off()`
+clears it, as NVIDIA's reference drivers do. Writes that still arrive while the
+sensor is unpowered reach the v4l2 control only, so `imx585_start_streaming()`
+first calls `imx585_sync_controls()`, which copies the controls' current gain,
+exposure and frame rate into `priv` before applying them.
+
 ### The hardware is StarlightEye, not a Kurokesu module
 
 The camera is
