@@ -27,7 +27,7 @@ SRC_URI = " \
 # to track -- see PORTING.md, "Maintenance model: this is the upstream".
 # Provenance belongs in the SRC_URI comment above. Bump this when the driver
 # changes meaningfully.
-PV = "1.0"
+PV = "1.1"
 
 S = "${UNPACKDIR}"
 

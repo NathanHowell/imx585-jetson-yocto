@@ -453,6 +453,11 @@ struct imx585 {
 	 * See imx585_register_lens_notifier(). */
 	struct v4l2_async_notifier *lens_nf;
 
+	/* The IR-cut filter switch, NULL when the device tree names none; see
+	 * imx585_init_ir_cut(). ir_cut_in is the position driven at probe. */
+	struct i2c_client *ir_cut;
+	bool ir_cut_in;
+
 	struct mutex lock; /* protects streaming state */
 };
 
@@ -1297,6 +1302,106 @@ static int imx585_init_inck_sel(struct imx585 *priv)
 	return -EINVAL;
 }
 
+/* --------------------------------------------------------------------------
+ * IR-cut filter
+ *
+ * StarlightEye moves its IR-cut filter with a motor driven by a CH32V003 at
+ * 0x34 on the sensor's I2C bus: one written byte, 0x01 swings the filter in
+ * (normal colour), 0x00 swings it out (night: infrared reaches the sensor).
+ * The MCU pulses the motor and goes back to sleep, and the filter stays where
+ * it was put, so after power-up its position is unknown; probe drives it to
+ * the device tree's default.
+ *
+ * The switch is a second address of the camera module rather than a device of
+ * its own: the sensor node lists it as reg-names = "sensor", "ircut" and this
+ * driver claims it with i2c_new_ancillary_device(). The control then sits on
+ * /dev/video0 with the sensor's, and userspace needs no raw access to the bus
+ * the sensor's registers are on. tegracam owns the control handler and only
+ * creates TEGRA_CAMERA_CID_* controls, so this one is added after
+ * tegracam_v4l2subdev_register(); VI rebuilds /dev/video0's controls from the
+ * subdev at first open, so it is there however binding was ordered. The MCU
+ * runs from the module's always-on 1.8 V domain, so unlike the sensor's own
+ * controls it can be written whether or not the sensor is powered.
+ * --------------------------------------------------------------------------
+ */
+
+/* Clear of the TEGRA_CAMERA_CID_* block at V4L2_CTRL_CLASS_CAMERA | 0x2000. */
+#define IMX585_CID_IR_CUT_FILTER	(V4L2_CTRL_CLASS_CAMERA | 0x3000)
+#define IMX585_IR_CUT_IN		0x01
+#define IMX585_IR_CUT_OUT		0x00
+
+static int imx585_ir_cut_write(struct imx585 *priv, bool in)
+{
+	int err = i2c_smbus_write_byte(priv->ir_cut,
+				       in ? IMX585_IR_CUT_IN : IMX585_IR_CUT_OUT);
+
+	if (err)
+		dev_err(priv->dev, "IR-cut filter switch write failed: %d\n",
+			err);
+	return err;
+}
+
+static int imx585_ir_cut_s_ctrl(struct v4l2_ctrl *ctrl)
+{
+	return imx585_ir_cut_write(ctrl->priv, ctrl->val);
+}
+
+static const struct v4l2_ctrl_ops imx585_ir_cut_ctrl_ops = {
+	.s_ctrl = imx585_ir_cut_s_ctrl,
+};
+
+static void imx585_release_ir_cut(void *client)
+{
+	i2c_unregister_device(client);
+}
+
+/* Claim the switch when the device tree names it, and put the filter in its
+ * default position. Never fatal: a camera whose switch is missing or does
+ * not answer still streams, just without the control. */
+static void imx585_init_ir_cut(struct imx585 *priv)
+{
+	struct device *dev = priv->dev;
+	struct i2c_client *ir_cut;
+	u32 in = 1;
+
+	if (of_property_match_string(dev->of_node, "reg-names", "ircut") < 0)
+		return;
+	of_property_read_u32(dev->of_node, "ir-cut-default", &in);
+	priv->ir_cut_in = in != 0;
+
+	ir_cut = i2c_new_ancillary_device(priv->client, "ircut", 0);
+	if (IS_ERR(ir_cut)) {
+		dev_warn(dev, "cannot claim the IR-cut filter switch: %ld\n",
+			 PTR_ERR(ir_cut));
+		return;
+	}
+	if (devm_add_action_or_reset(dev, imx585_release_ir_cut, ir_cut))
+		return;
+
+	priv->ir_cut = ir_cut;
+	imx585_ir_cut_write(priv, priv->ir_cut_in);
+}
+
+static void imx585_add_ir_cut_control(struct imx585 *priv)
+{
+	const struct v4l2_ctrl_config cfg = {
+		.ops = &imx585_ir_cut_ctrl_ops,
+		.id = IMX585_CID_IR_CUT_FILTER,
+		.name = "IR Cut Filter",
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.min = 0,
+		.max = 1,
+		.step = 1,
+		.def = priv->ir_cut_in,
+	};
+
+	if (!priv->ir_cut)
+		return;
+	if (!v4l2_ctrl_new_custom(priv->s_data->ctrl_handler, &cfg, priv))
+		dev_warn(priv->dev, "could not add the IR-cut filter control: %d\n",
+			 priv->s_data->ctrl_handler->error);
+}
+
 /* tegracam creates gain, exposure and frame_rate with a default of 0 and only
  * narrows their ranges at stream start, which clamps the current value to the
  * mode's minimum. It never pushes those values into the sensor, so the stream
@@ -1415,6 +1520,8 @@ static int imx585_probe(struct i2c_client *client)
 	if (err)
 		goto unregister;
 
+	imx585_init_ir_cut(priv);
+
 	/* Before tegracam_v4l2subdev_register(): that async-registers the sensor,
 	 * and the sub-notifier has to exist by then to be linked as its child. */
 	err = imx585_register_lens_notifier(priv);
@@ -1426,6 +1533,7 @@ static int imx585_probe(struct i2c_client *client)
 		goto unregister_lens;
 
 	imx585_seed_controls(priv);
+	imx585_add_ir_cut_control(priv);
 
 	dev_info(dev, "Sony IMX585 tegracam driver registered\n");
 	return 0;

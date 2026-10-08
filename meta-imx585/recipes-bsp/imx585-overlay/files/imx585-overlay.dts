@@ -216,7 +216,17 @@
 							 */
 							lens-focus = <&cef168>;
 							compatible = "sony,imx585";
-							reg = <0x1a>;
+							/* The CH32V003 IR-cut filter switch (U7, driving the
+							 * DRV8837C motor driver U8) is a second address of the
+							 * camera module: the driver claims it as an ancillary
+							 * client and exposes an "IR Cut Filter" control on the
+							 * video node. ir-cut-default is the position driven at
+							 * probe, since the filter latches and is in an unknown
+							 * place after power-up: 1 = in (colour), 0 = out
+							 * (infrared reaches the sensor). */
+							reg = <0x1a>, <0x34>;
+							reg-names = "sensor", "ircut";
+							ir-cut-default = <1>;
 							devnode = "video1";
 							/* On-board oscillator -- see imx585_inck above. The name must match
 							 * `mclk`: imx585_parse_dt() reads that string into pdata->mclk_name

@@ -27,8 +27,8 @@ LIC_FILES_CHKSUM = "file://imx585-overlay.dts;beginline=1;endline=1;md5=fcab174c
 #   - csi_pixel_bit_depth = 12, the sensor being RAW12.
 #   - On-board I2C peripherals on the cam1 leg: TMP117 at 0x48 enabled,
 #     ICM-42688-P at 0x68 present but disabled (its driver mandates an interrupt
-#     that the board does not route), CH32V003 IR-filter switch at 0x34
-#     documented without a node. See PORTING.md.
+#     that the board does not route), CH32V003 IR-filter switch at 0x34 as the
+#     sensor node's second reg ("ircut"), claimed by the driver. See PORTING.md.
 #
 # The vana/vdig/vddl nodes are all always-on, which is accurate here: the p3768
 # camera FPC has no host gate, and vdig/vddl are generated on StarlightEye. See

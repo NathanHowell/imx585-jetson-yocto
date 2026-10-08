@@ -586,7 +586,7 @@ Added to the `i2c@1` leg of `imx585-overlay.dts`, verified to compile with `dtc 
 | Addr | Device | State |
 |---|---|---|
 | `0x1a` | IMX585 (U4) | existing |
-| `0x34` | CH32V003 IR-cut filter switch (U7) + DRV8837C (U8) | **no node by design** — no kernel driver. One-byte write from userspace on the leg's `/dev/i2c-N`. Address recorded so it is not reused. |
+| `0x34` | CH32V003 IR-cut filter switch (U7) + DRV8837C (U8) | Second `reg` of the sensor node (`reg-names = "sensor", "ircut"`), claimed by the IMX585 driver with `i2c_new_ancillary_device()` and exposed as the boolean `IR Cut Filter` control (`ir_cut_filter`, `V4L2_CTRL_CLASS_CAMERA \| 0x3000`) on `/dev/video0`. `ir-cut-default` (1 = in) is driven at probe. Previously a userspace write on `/dev/i2c-N`; moved into the driver so containers need no raw access to the sensor's bus, whose number depends on mux probe order. |
 | `0x48` | TMP117 (U6) | `ti,tmp117`, enabled. `vcc-supply` is *required* by the binding; pointed at `imx585_vddl` (+1V8). |
 | `0x68` | ICM-42688-P (U11) | `invensense,icm42688`, **`status = "disabled"`** |
 
